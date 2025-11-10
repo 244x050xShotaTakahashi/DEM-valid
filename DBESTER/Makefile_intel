@@ -1,0 +1,31 @@
+FC = mpiifort
+FFLAGS = -O2 -g -traceback -check bounds
+HDF5_LIBS = -L/usr/lib64 -lhdf5_fortran -lhdf5 -lz
+LDFLAGS = $(HDF5_LIBS)
+
+# デフォルトターゲット
+all: dmotion14 dmotion_simple
+
+# 最新版（入力ファイル対応）
+dmotion14: dmotion14.f90
+	$(FC) $(FFLAGS) dmotion14.f90 $(LDFLAGS) -o $@
+
+# 簡単版（HDF5なし）
+dmotion_simple: dmotion_simple.f90
+	ifort -O2 dmotion_simple.f90 -o $@
+
+# 他のバージョン
+dmotion16: dmotion16.f90
+	$(FC) $(FFLAGS) dmotion16.f90 $(LDFLAGS) -o $@
+
+dmotion13: dmotion13.f90
+	$(FC) $(FFLAGS) dmotion13.f90 $(LDFLAGS) -o $@
+
+# HDF5なしのバージョン（電場データなし）
+dmotion14_nohdf5: dmotion14_nohdf5.f90
+	$(FC) $(FFLAGS) dmotion14_nohdf5.f90 -o $@
+
+clean:
+	rm -f dmotion14 dmotion16 dmotion13 dmotion_simple dmotion14_nohdf5 *.o dust_simple_*.vtk
+
+.PHONY: all clean

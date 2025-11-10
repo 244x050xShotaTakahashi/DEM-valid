@@ -1,0 +1,234 @@
+&esorem
+  emflag = 0
+&end
+
+&jobcon
+  jobnum = 0,1,
+  nstep  = 50000,
+  lstep  = 0,
+  maxt   = 10000000
+&end	
+
+&digcon
+  i1hdf    = 0,
+  i2hdf    = 0,
+  i3hdf    = 0,
+  hdfdigstart = -46000,
+  hdfdigend = 50000,
+  isort(1) = 500,
+  isort(2) = 0,
+  isort(3) = 0,
+  idim_sp  = 3,
+  itchck   = 1,
+  intfoc   = 100,
+  iediag   = 0,
+  iddiag   = 0,
+  ifdiag   = 200,
+  ijdiag   = 200,
+  iadiag   = 0,
+  imdig(1) = 0,
+  ildig(1) = 1,
+  isdiag   = 0,
+  ikdiag   = 0,
+  ikxmax   = 16,
+  ikymax   = 16,
+  ikzmax   = 16,
+  ivdiag   = 0,
+  ipahdf(1)= 0,
+  ipadig(1)= 1024,
+  ipahdf(2)= 0,
+  ipadig(2)= 1024,
+  ipahdf(3)= 0,
+  ipadig(3)= 1,
+  ipahdf(4)= 0,
+  ipadig(4)= 1,
+  ipaxyz   = 1,1,1,1,1,1, 1,1,1,1,1,1, 1,1,1,1,1,1, 1,1,1,1,1,1,
+  ifxyz    = 1,1,1,0,0,0,1,
+  ijxyz    = 1,1,1
+&end
+
+&plasma
+  wp(1)    =  4.207807d-1,
+  wp(2)    =  9.819807d-3,
+  wp(3)    =  4.207807d-1,
+  wp(4)    =  4.207807d-1,
+  wc       =  0.0d0,
+  cv       =  1000.0d0,
+  phixy    =  0.0d0,
+  phiz     =  60.0d0,
+  e0x      =  0.0d0,
+  e0y      =  0.0d0,
+  e0z      =  0.0d0
+&end
+
+&tmgrid
+  dr       = 1.0d0,
+  dt       = 0.02d0,
+  nx       = 160,
+  ny       = 160,
+  nz       = 800,
+&end
+
+&system
+  nspec    = 3,
+  mltstp   = 1,
+  mltstpf  = 1,
+  juncan   = 0,
+  jxfltr   = 0,
+  jyfltr   = 0,
+  jzfltr   = 0,
+  ipexfl   = 0,
+  ipeyfl   = 0,
+  ipezfl   = 0,
+  nfltrx   = 0,
+  nfltry   = 0,
+  nfltrz   = 0,
+  ionchg   = 0,
+  alpha    = 0.0d0,
+  nxl      = 16,
+  nxr      = 16,
+  nyl      = 16,
+  nyr      = 16,
+  nzl      = 16,
+  nzr      = 16,
+  nfbnd    = 0,0,1,
+  npbnd    = 0,0,2, 0,0,2, 0,0,2, 0,0,2,
+  nflag_ecrct = 1,
+  mtd_vbnd(1) = 0,
+  mtd_vbnd(2) = 0,
+  mtd_vbnd(3) = 1
+&end
+
+&intp
+  qm(1)    = -1.0d0,
+  qm(2)    = 5.446208d-4,
+  qm(3)    = -1.0d0,
+  qm(4)    = -1.0d0,
+  np(1)    = 655360000,
+  np(2)    = 655360000,
+  np(3)    = 1310720000,
+  np(4)    = 1,
+  path(1)  = 4.102412d0,
+  path(2)  = 9.573844d-2,
+  path(3)  = 2.074920d0,
+  path(4)  = 1.978359d0,
+  peth(1)  = 4.102412d0,
+  peth(2)  = 9.573844d-2,
+  peth(3)  = 2.074920d0,
+  peth(4)  = 1.978359d0,
+  spa(1)   = 0.0d0,
+  spe(1)   = 1.501038d0,
+  speth(1) = 0.0d0,
+  spa(2)   = 0.0d0,
+  spe(2)   = 1.501038d0,
+  speth(2) = 0.0d0,
+  spa(3)   = 0.0d0,
+  spe(3)   = 0.0d0,
+  speth(3) = 0.0d0,
+  spa(4)   = 0.0d0,
+  spe(4)   = 0.0d0,
+  speth(4) = 0.0d0,
+  ioptd(1) = 0,
+  nphi     = 1,
+  ndst     = 1,
+  vpa      = -16.d0,
+  vpb      = 16.d0,
+  vpe      = 32.d0
+&end
+
+&inp
+  npin(1)  = 655360000,
+  npin(2)  = 655360000,
+  npin(3)  = 0,
+  npin(4)  = 0,
+  inpf(1)     = 1,
+  inpb(1)     = 1,
+  injct(1)    = 1,
+  npr(1)      = 524288,
+  inpf(2)     = 1,
+  inpb(2)     = 1,
+  injct(2)    = 1,
+  npr(2)      = 524288,
+  inpf(3)     = 1,
+  inpb(3)     = 1,
+  injct(3)    = 1,
+  npr(3)      = 524288,
+  inpf(4)     = 1,
+  inpb(4)     = 1,
+  injct(4)    = 1,
+  npr(4)      = 524288
+&end
+
+&drft
+  vd       =  0.d0
+&end
+
+&ptcond
+  npc         = 0,
+  npcg 	      = 0,
+  epc2        = 3.d0,
+  amu2        = 1.d0,
+  pemax       = 3.302355d2,
+  deltaemax   = 2.5d0,
+  wrelax      = 1.0d0,
+  sfecrrct    = 1,
+  modeww      = -2,
+  lbhole      = 15.0d0,
+  ubhole      = 60.0d0,
+  xholec      = 80.0d0,
+  yholec      = 80.0d0,
+  rhole       = 25.0d0
+&end
+
+&scrnt
+  jsn      = 0,
+  pbfact   = 1.d0,
+  imode    = 0,
+  omegatw  = 0.0d0,
+  lambdatw = 0,
+  amptw    = 0.0d0
+&end
+
+&emissn
+  nflag_emit(1) = 0,
+  nflag_emit(2) = 0,
+  nflag_emit(3) = 3,
+  nflag_emit(4) = 0,
+  nepl(3)       = 0,
+  dnsf(3)       = 128,
+  flpf(3)       = 2.3983991d3,
+  nepl(4)       = 0,
+  dnsf(4)       = 128,
+  flpf(4)       = 2.3983991d3,
+  ipcpl(1)      = 1,
+  nemd(1)       = +3,
+  thetaz        = 30.0d0,
+  thetaxy       = 180.0d0,
+  imarea        = 0.0d0,0.0d0,0.0d0,
+  plreloc       = 0.0d0
+&end
+
+&dipole
+  mode_dipole  = 0,
+  line_mode    = 0,
+  ngap         = 0,
+  gap_amp(1)   = 0.0,
+  ajs_amp(1)   = 0.0,
+  pgamp(1)     = 0.0,
+  resc(1)      = 0.0d0,
+  capc(1)      = 0.0d0,
+  w_c          = 0.0
+&end
+
+&mpi
+  nodes(1)     = 4,
+  nodes(2)     = 4,
+  nodes(3)     = 32
+&end
+
+&verbose
+  EMSES_verbose  = 0,
+  OHHELP_verbose = 0,
+  OHHELP_stats   = 0,
+  OHHELP_repiter = 0
+&end

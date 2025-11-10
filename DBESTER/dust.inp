@@ -1,0 +1,61 @@
+&jobcon
+  nstep = 10000000 !Total number of steps
+  dat   = 2     !whether to output dat files
+  vtk   = 1     !whether to output vtk files
+  nden  = 2     !1:nden is valid 2:nden is invalid
+  oml   = 1     !1:OML is valid 2:OML is invalid
+  jmode = 2     !1:old version current density 2:new version current density
+  reflect = 1   !reflecting boundary for lunar vertical hole
+  fix = 1       !fixing dusts on the ground
+  periodic = 2  !periodic boundary
+  xyfix = 2     !1:dusts does not go to xydirection
+&end
+
+&inphdf
+  sind = 0  !data set of input to HDF5 files
+  eind = 10 !data set of input to HDF5 files
+&end
+
+&digcon
+  stvtk = 10000      !how often output vtk files
+  lavtk = 1    !output vtk files later this step
+  stdat = 1      !how often output dat files
+  ladat = 100    !output dat files later this step
+  stnden = 10000 !how often output number density HDF5 files
+&end
+
+&conv
+  conve = 1.956951    !conversion number of electric field
+  convj = 7.372429E+5 !conversion number of current density
+&end
+
+&tmgrid
+  dt = 1.0E-4
+  nx = 160
+  ny = 160
+  nz = 800
+&end
+
+&plasma
+  Te    = 8.6    ![eV]
+  Ti    = 8.6    ![eV]
+  Tph   = 2.2    ![eV]
+  jph   = 4.5E-6 ![Å A/m^2]
+&end
+
+&grain
+  r    = 2.0E-8 !dust radius 
+  den  = 2.5E+3 !dust density
+  v0   = 0    !intitial velocity of Z direction
+  dnum = 500     !The number of dusts
+&end
+
+&ptcond
+  xholec = 80
+  yholec = 80
+  rhole  = 25
+  lbhole = 15
+  ubhole = 60
+  theta  = 30
+  g	 = 1.6
+&end

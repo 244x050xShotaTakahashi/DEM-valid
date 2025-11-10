@@ -1,0 +1,4 @@
+validation/particle1d/data/particle_collision_validation.csv filter=lfs diff=lfs merge=lfs -text
+validation/slope2d/data/pem_slope_trace.csv filter=lfs diff=lfs merge=lfs -text
+validation/slope2d/data/slope_trace.csv filter=lfs diff=lfs merge=lfs -text
+validation/damped_oscillator/data/oscillator.csv filter=lfs diff=lfs merge=lfs -text

@@ -1,0 +1,26 @@
+FC = mpifrtpx
+FFLAGS = -Kfast -g -Ntl_trt -Nquickdbg
+HDF5DIR = /center/local/apl/fx/hdf5-FX100-mpi/include
+FFTWDIR = /center/local/apl/fx/fftw-3.3.4-fx100/include
+LDFLAGS = -L/center/local/apl/fx/hdf5-FX100-mpi/lib -lhdf5hl_fortran -lhdf5_hl -lhdf5_fortran -lhdf5 -lz -L/center/local/apl/fx/fftw-3.3.4-fx100 -lfftw3
+
+# デフォルトターゲット
+all: dmotion14 dmotion16
+
+# 最新版（入力ファイル対応）
+dmotion14: dmotion14.f90
+	$(FC) $(FFLAGS) -I$(FFTWDIR) -I$(HDF5DIR) dmotion14.f90 $(LDFLAGS) -o $@
+
+# 最新版
+dmotion16: dmotion16.f90
+	$(FC) $(FFLAGS) -I$(FFTWDIR) -I$(HDF5DIR) dmotion16.f90 $(LDFLAGS) -o $@
+
+# 旧版の例
+dmotion13: dmotion13.f90
+	$(FC) $(FFLAGS) -I$(FFTWDIR) -I$(HDF5DIR) dmotion13.f90 $(LDFLAGS) -o $@
+
+clean:
+	rm -f dmotion14 dmotion16 dmotion13 *.o
+
+.PHONY: all clean
+
