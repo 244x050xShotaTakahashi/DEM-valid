@@ -4,7 +4,7 @@
 module simulation_constants_mod
     implicit none
     integer, parameter :: ni_max = 1000  ! ni: 最大粒子数
-    integer, parameter :: nj_max = 13    ! nj: 粒子ごとの最大接触点数 (粒子間10 + 壁3)
+    integer, parameter :: nj_max = 14    ! nj: 粒子ごとの最大接触点数 (粒子間10 + 壁4)
     integer, parameter :: nc_max = 20000 ! nc: グリッド内の最大セル数
     real(8), parameter :: PI_VAL = 3.141592653589793d0 ! pi: 円周率
     real(8), parameter :: GRAVITY_ACCEL = 9.80665d0    ! g: 重力加速度
@@ -32,6 +32,7 @@ module simulation_parameters_mod
     real(8) :: particle_radius_large          ! r1: 大きな粒子の半径
     real(8) :: particle_radius_small          ! r2: 小さな粒子の半径
     real(8) :: container_width                ! w: 容器の幅
+    real(8) :: container_height               ! h: 容器の高さ (0.0=制限なし)
     integer :: particle_gen_layers            ! ipz: 初期粒子生成層数
     integer :: random_seed                    ! 乱数シード
     
@@ -42,6 +43,15 @@ module simulation_parameters_mod
     ! 出力制御パラメータ
     integer :: output_interval                ! 出力間隔 [ステップ]
     integer :: max_calculation_steps          ! 最大計算ステップ数
+    
+    ! 明示座標入力の制御
+    logical :: use_explicit_positions         ! 明示座標ファイルの有無で切替
+    character(len=256) :: positions_file      ! 明示座標ファイルパス
+    
+    ! クーロン力関連パラメータ
+    real(8) :: coulomb_constant               ! k: クーロン定数 [N⋅m²/C²]
+    real(8) :: default_charge                 ! デフォルトの粒子電荷 [C]
+    logical :: enable_coulomb_force           ! クーロン力の有効化フラグ
 
     save
 end module simulation_parameters_mod
@@ -55,6 +65,7 @@ module particle_data_mod
     real(8), dimension(ni_max) :: radius         ! rr(ni): 粒子半径
     real(8), dimension(ni_max) :: mass           ! wei(ni): 粒子質量
     real(8), dimension(ni_max) :: moment_inertia ! pmi(ni): 粒子の慣性モーメント
+    real(8), dimension(ni_max) :: charge         ! q(ni): 粒子の電荷 [C]
 
     ! 位置と向き
     real(8), dimension(ni_max) :: x_coord        ! x0(ni): 粒子中心のx座標
@@ -165,6 +176,9 @@ program two_dimensional_pem
                 call pcont_sub(i, rmax_particle_radius)
             end do
             
+            ! クーロン力の計算
+            call coulomb_force_sub()
+            
             call nposit_leapfrog_sub(static_judge_flag, 0)
             leapfrog_initialized = .true.
         else
@@ -188,6 +202,9 @@ program two_dimensional_pem
                 ! 粒子間の接触力計算
                 call pcont_sub(i, rmax_particle_radius)
             end do
+            
+            ! クーロン力の計算
+            call coulomb_force_sub()
             
             ! フェーズ2: 速度更新（新しい位置での力を使用）
             call nposit_leapfrog_sub(static_judge_flag, 2)
@@ -234,6 +251,12 @@ program two_dimensional_pem
     write(*,*) '計算ステップ数: ', it_step
     write(*,*) '実行時間: ', elapsed_time, ' 秒'
     write(*,*) '1ステップあたりの平均時間: ', elapsed_time / real(it_step), ' 秒'
+    write(*,*) 'コンテナ幅: ', container_width
+    if (container_height > 0.0d0) then
+        write(*,*) 'コンテナ高さ: ', container_height, ' (上壁あり)'
+    else
+        write(*,*) 'コンテナ高さ: 制限なし (上壁なし)'
+    end if
     
     if (disable_cell_algorithm .or. cell_size_override > 0.0d0) then
         write(*,*) 'セル法アルゴリズム: 無効化'
@@ -291,6 +314,7 @@ contains
         particle_radius_large = 1.0d-2
         particle_radius_small = 5.0d-3
         container_width = 5.0d-1
+        container_height = 0.0d0  ! 0.0=制限なし（上壁なし）
         particle_gen_layers = 30
         random_seed = 584287
         disable_cell_algorithm = .false.
@@ -298,6 +322,9 @@ contains
         cell_size_override = 0.0d0
         output_interval = 50000
         max_calculation_steps = 2000000
+        enable_coulomb_force = .false.
+        coulomb_constant = 8.99d9  ! クーロン定数 k = 1/(4πε₀) [N⋅m²/C²]
+        default_charge = 0.0d0      ! デフォルト電荷 [C]
         
         do
             read(unit_num, '(A)', iostat=ios) line
@@ -333,6 +360,8 @@ contains
                     particle_radius_small = value
                 case ('CONTAINER_WIDTH')
                     container_width = value
+                case ('CONTAINER_HEIGHT')
+                    container_height = value
                 case ('PARTICLE_GEN_LAYERS')
                     particle_gen_layers = int(value)
                 case ('RANDOM_SEED')
@@ -345,6 +374,12 @@ contains
                     cell_size_override = value
                 case ('MAX_CALCULATION_STEPS')
                     max_calculation_steps = int(value)
+                case ('ENABLE_COULOMB_FORCE')
+                    enable_coulomb_force = (int(value) == 1)
+                case ('COULOMB_CONSTANT')
+                    coulomb_constant = value
+                case ('DEFAULT_CHARGE')
+                    default_charge = value
                 case default
                     write(*,*) '警告: 不明なキーワード: ', trim(keyword)
             end select
@@ -356,6 +391,16 @@ contains
         
         ! 数値積分法の表示
         write(*,*) '数値積分法: 蛙飛び法'
+        
+        ! 明示座標ファイルの存在チェック（固定パス）
+        positions_file = 'inputs/particle_positions.dat'
+        use_explicit_positions = .false.
+        inquire(file=trim(positions_file), exist=use_explicit_positions)
+        if (use_explicit_positions) then
+            write(*,*) '粒子配置: 明示座標ファイルを使用: ', trim(positions_file)
+        else
+            write(*,*) '粒子配置: 乱数生成（明示座標ファイルなし）'
+        end if
         
     end subroutine read_input_file
 
@@ -374,49 +419,95 @@ contains
         real(8) :: r1_val, r2_val, rn_val, dx_offset, random_uniform_val
         real(8) :: rmin_val ! 宣言をここに移動
         integer :: particles_this_row ! 宣言をここに移動
+        ! 明示座標入力用
+        integer :: ios
+        character(len=256) :: line
+        real(8) :: xin, zin, rin, qin
+        integer :: read_count
 
         r1_val = particle_radius_large
         r2_val = particle_radius_small
-
-        rmax_out = r1_val             ! 最大半径をr1_valとする
-        rmin_val = r2_val             ! 最小半径をr2_valとする
-
-        rn_val = rmax_out + 1.0d-5    ! パッキングのための有効半径
-        ipx_calc = idint(container_width / (2.0d0 * rn_val)) ! 1行あたりの粒子数 (概算)
-
-        current_particle_count = 0
-        do i_layer = 1, particle_gen_layers
-            if (mod(i_layer, 2) == 0) then  ! 偶数層
-                dx_offset = 2.0d0 * rn_val
-                particles_this_row = ipx_calc - 1
-            else                            ! 奇数層
-                dx_offset = rn_val
-                particles_this_row = ipx_calc
+        
+        if (use_explicit_positions) then
+            ! 明示座標ファイルから読み込み
+            num_particles = 0
+            rmax_out = 0.0d0
+            rmin_val = 1.0d99
+            open(unit=21, file=trim(positions_file), status='old', action='read', iostat=ios)
+            if (ios /= 0) then
+                write(*,*) 'エラー: 明示座標ファイルを開けません: ', trim(positions_file)
+                stop 'fposit_sub: 位置ファイルopen失敗'
             end if
-
-            do j_particle_in_layer = 1, particles_this_row
-                call custom_random(random_seed, random_uniform_val)
-                if (random_uniform_val < 2.0d-1) cycle ! 一部の位置をスキップ
-
-                current_particle_count = current_particle_count + 1
-                if (current_particle_count > ni_max) then
-                    write(*,*) '粒子数がni_maxを超えました: ', ni_max
+            do
+                read(21,'(A)', iostat=ios) line
+                if (ios /= 0) exit
+                if (len_trim(line) == 0) cycle
+                if (line(1:1) == '#' .or. line(1:1) == '!') cycle
+                ! 電荷を含めて読み込み (4列目がなければデフォルト値を使用)
+                qin = default_charge
+                read(line, *, iostat=ios) xin, zin, rin, qin
+                if (ios /= 0) then
+                    ! 4列目がない場合は3列のみ読み込み
+                    read(line, *, iostat=ios) xin, zin, rin
+                    if (ios /= 0) cycle
+                    qin = default_charge
+                end if
+                if (rin <= 0.0d0) cycle
+                num_particles = num_particles + 1
+                if (num_particles > ni_max) then
+                    write(*,*) 'エラー: 粒子数がni_maxを超過: ', ni_max
                     stop 'fposit_sub: 粒子が多すぎます'
                 end if
-                num_particles = current_particle_count ! グローバルな粒子数を更新
-
-                x_coord(num_particles) = 2.0d0 * rn_val * (j_particle_in_layer - 1) + dx_offset
-                z_coord(num_particles) = 2.0d0 * rn_val * (i_layer - 1) + rn_val
-                rotation_angle(num_particles) = 0.0d0 ! 回転角を初期化
-
-                call custom_random(random_seed, random_uniform_val)
-                if (random_uniform_val < 0.5d0) then
-                    radius(num_particles) = r1_val
-                else
-                    radius(num_particles) = r2_val
-                end if
+                x_coord(num_particles) = xin
+                z_coord(num_particles) = zin
+                radius(num_particles)  = rin
+                charge(num_particles)  = qin
+                rotation_angle(num_particles) = 0.0d0
+                if (rin > rmax_out) rmax_out = rin
+                if (rin < rmin_val) rmin_val = rin
             end do
-        end do
+            close(21)
+            if (num_particles <= 0) then
+                write(*,*) 'エラー: 明示座標ファイルに有効な粒子がありません: ', trim(positions_file)
+                stop 'fposit_sub: 有効粒子なし'
+            end if
+        else
+            ! 既存の乱数配置
+            rmax_out = r1_val             ! 最大半径をr1_valとする
+            rmin_val = r2_val             ! 最小半径をr2_valとする
+            rn_val = rmax_out + 1.0d-5    ! パッキングのための有効半径
+            ipx_calc = idint(container_width / (2.0d0 * rn_val)) ! 1行あたりの粒子数 (概算)
+            current_particle_count = 0
+            do i_layer = 1, particle_gen_layers
+                if (mod(i_layer, 2) == 0) then  ! 偶数層
+                    dx_offset = 2.0d0 * rn_val
+                    particles_this_row = ipx_calc - 1
+                else                            ! 奇数層
+                    dx_offset = rn_val
+                    particles_this_row = ipx_calc
+                end if
+                do j_particle_in_layer = 1, particles_this_row
+                    call custom_random(random_seed, random_uniform_val)
+                    if (random_uniform_val < 2.0d-1) cycle ! 一部の位置をスキップ
+                    current_particle_count = current_particle_count + 1
+                    if (current_particle_count > ni_max) then
+                        write(*,*) '粒子数がni_maxを超えました: ', ni_max
+                        stop 'fposit_sub: 粒子が多すぎます'
+                    end if
+                    num_particles = current_particle_count ! グローバルな粒子数を更新
+                    x_coord(num_particles) = 2.0d0 * rn_val * (j_particle_in_layer - 1) + dx_offset
+                    z_coord(num_particles) = 2.0d0 * rn_val * (i_layer - 1) + rn_val
+                    rotation_angle(num_particles) = 0.0d0 ! 回転角を初期化
+                    charge(num_particles) = default_charge ! 電荷を初期化
+                    call custom_random(random_seed, random_uniform_val)
+                    if (random_uniform_val < 0.5d0) then
+                        radius(num_particles) = r1_val
+                    else
+                        radius(num_particles) = r2_val
+                    end if
+                end do
+            end do
+        end if
         write(*,*) '生成された粒子数: ', num_particles
 
         ! セルサイズ計算 (原文PDF p.35 eq 3.25: C < sqrt(2)*rmin)
@@ -444,9 +535,14 @@ contains
         endif
 
         cells_x_dir = idint(container_width / cell_size) + 1
+        
         ! cells_z_dirは粒子が到達しうる最大高さをカバーする必要がある
-        ! 元のコード: idz=idint(z0(n)/c)+10。生成時の最上部粒子のz座標を使用。
-        if (num_particles > 0 .and. cell_size > 0.0d0) then
+        ! container_heightが指定されている場合はそれを使用、そうでなければ従来の推定方法を使用
+        if (container_height > 0.0d0 .and. cell_size > 0.0d0) then
+            ! 上壁が指定されている場合は、その高さでセル数を計算
+            cells_z_dir = idint(container_height / cell_size) + 1
+        else if (num_particles > 0 .and. cell_size > 0.0d0) then
+            ! 従来の方法: 生成時の最上部粒子のz座標を使用
             cells_z_dir = idint(z_coord(num_particles) / cell_size) + 10 
         else if (particle_gen_layers > 0 .and. cell_size > 0.0d0 .and. rn_val > 0.0d0) then ! 粒子がない場合でも推定
              if (particle_gen_layers > 0 .and. rn_val > 0 .and. cell_size > 0) then
@@ -639,8 +735,26 @@ contains
             shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
             contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
         end if
+
+        ! 上壁 (contact_partner_idx = num_particles + 4)
+        ! container_height > 0の場合のみ上壁を有効化
+        if (container_height > 0.0d0) then
+            wall_contact_slot_idx = 10 ! 上壁用の固定スロット
+            wall_partner_id = num_particles + 4
+            if (zi + ri_particle > container_height) then ! 上壁と接触
+                wall_angle_sin = 1.0d0
+                wall_angle_cos = 0.0d0
+                overlap_gap = (zi + ri_particle) - container_height
+                contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
+                call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, 1.0d0, 1.0d0)
+            else                                            ! 接触なし
+                normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
+                shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
+                contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
+            end if
+        end if
         
-    ! ! 斜面壁  (contact_partner_idx = num_particles + 4)
+    ! ! 斜面壁  (contact_partner_idx = num_particles + 5)
     !     wall_contact_slot_idx = 10 ! 斜面壁用の固定スロット
     !     wall_partner_id = num_particles + 4
         
@@ -813,6 +927,59 @@ contains
             end do ! x方向セルループ
         end do     ! z方向セルループ
     end subroutine pcont_sub
+
+    !> 全粒子間のクーロン力を計算するサブルーチン
+    subroutine coulomb_force_sub
+        use simulation_parameters_mod, only: coulomb_constant, enable_coulomb_force
+        use particle_data_mod
+        use cell_system_mod, only: num_particles
+        implicit none
+        
+        integer :: i, j
+        real(8) :: dx, dz, dist, dist_sq, dist_cubed
+        real(8) :: force_magnitude, fx, fz
+        real(8) :: qi, qj
+        
+        ! クーロン力が無効化されている場合は何もしない
+        if (.not. enable_coulomb_force) return
+        
+        ! 全粒子ペアについてクーロン力を計算
+        do i = 1, num_particles - 1
+            qi = charge(i)
+            if (abs(qi) < 1.0d-20) cycle ! 電荷がゼロならスキップ
+            
+            do j = i + 1, num_particles
+                qj = charge(j)
+                if (abs(qj) < 1.0d-20) cycle ! 電荷がゼロならスキップ
+                
+                ! 粒子間の距離ベクトルと距離
+                dx = x_coord(j) - x_coord(i)
+                dz = z_coord(j) - z_coord(i)
+                dist_sq = dx*dx + dz*dz
+                
+                ! ゼロ除算を回避
+                if (dist_sq < 1.0d-20) cycle
+                
+                dist = sqrt(dist_sq)
+                dist_cubed = dist * dist_sq
+                
+                ! クーロン力の大きさ F = k * q1 * q2 / r²
+                ! 力のベクトル成分 F_vec = F * (r_vec / |r|) = k * q1 * q2 * r_vec / r³
+                force_magnitude = coulomb_constant * qi * qj / dist_cubed
+                
+                fx = force_magnitude * dx
+                fz = force_magnitude * dz
+                
+                ! 粒子iに力を加算（粒子jへ向かう力）
+                x_force_sum(i) = x_force_sum(i) + fx
+                z_force_sum(i) = z_force_sum(i) + fz
+                
+                ! 粒子jに反作用力を加算（粒子iへ向かう力）
+                x_force_sum(j) = x_force_sum(j) - fx
+                z_force_sum(j) = z_force_sum(j) - fz
+            end do
+        end do
+    end subroutine coulomb_force_sub
 
     !> 蛙飛び法による粒子の位置と速度を更新するサブルーチン
     subroutine nposit_leapfrog_sub(judge_static, phase)
@@ -1014,14 +1181,14 @@ contains
         else
             ! 既存接触の場合、増分で更新
             normal_force_contact(p_i, contact_slot_idx_for_pi) = normal_force_contact(p_i, contact_slot_idx_for_pi) + &
-                                                                 kn_normal_stiffness * rel_disp_normal_incr ! 弾性項抜き出す部分
+                                                                 kn_normal_stiffness * rel_disp_normal_incr 
             shear_force_contact(p_i, contact_slot_idx_for_pi) = shear_force_contact(p_i, contact_slot_idx_for_pi) + &
                                                                 ks_shear_stiffness * rel_disp_shear_incr
         end if
         
         ! 粘性抵抗力成分の計算 (式3.6, 3.9)
         if (time_step > 1.0d-20) then
-             damping_force_normal = damping_coeff_normal * rel_disp_normal_incr / time_step !減衰項抜き出す部分
+             damping_force_normal = damping_coeff_normal * rel_disp_normal_incr / time_step 
              damping_force_shear = damping_coeff_shear * rel_disp_shear_incr / time_step
         else
              damping_force_normal = 0.0d0
@@ -1048,14 +1215,14 @@ contains
         end if
 
         ! 粘性を含む合計の力 (式3.8, 3.12)
-        total_normal_force = normal_force_contact(p_i, contact_slot_idx_for_pi) + damping_force_normal ! 減衰項抜き出す部分
+        total_normal_force = normal_force_contact(p_i, contact_slot_idx_for_pi) + damping_force_normal 
         total_shear_force = shear_force_contact(p_i, contact_slot_idx_for_pi) + damping_force_shear
 
         ! 粒子p_iに力を適用 (式3.13)
         ! 法線力は中心を結ぶ線に沿って作用 (angle_cos, angle_sin で定義される iからjへの方向)
         ! せん断力はそれに垂直。
         x_force_sum(p_i) = x_force_sum(p_i) - total_normal_force * angle_cos + total_shear_force * angle_sin
-        z_force_sum(p_i) = z_force_sum(p_i) - total_normal_force * angle_sin - total_shear_force * angle_cos    ! 減衰項抜き出す部分
+        z_force_sum(p_i) = z_force_sum(p_i) - total_normal_force * angle_sin - total_shear_force * angle_cos    
         moment_sum(p_i) = moment_sum(p_i) - ri_val * total_shear_force
 
         ! 粒子p_jに反作用力を適用 (相手が粒子の場合)
@@ -1078,7 +1245,7 @@ contains
     !> グラフィック用データを出力するサブルーチン
     subroutine gfout_sub(iter_step, time_val, rmax_val)
         use simulation_constants_mod, only: nj_max, GRAVITY_ACCEL
-        use simulation_parameters_mod, only: container_width, time_step
+        use simulation_parameters_mod, only: container_width, container_height, time_step
         use particle_data_mod
         use cell_system_mod, only: num_particles
         implicit none
@@ -1093,7 +1260,7 @@ contains
             open(unit=11, file='data/graph21.d', status='replace', action='write')
         end if
 
-        write(10,*) num_particles, time_val, container_width, rmax_val
+        write(10,*) num_particles, time_val, container_width, container_height, rmax_val
         if (num_particles > 0) then
             ! 出力用補正速度の準備（蛙飛び法のみ 0.5*dt*加速度で補正）
             dt = time_step
@@ -1144,13 +1311,13 @@ contains
         open(unit=13, file='data/backl.d', status='replace', action='write')
 
         write(13,*) num_particles, cells_x_dir, cells_z_dir, particle_gen_layers
-        write(13,*) rmax_dummy_val, 0.0d0, container_width, cell_size, time_step ! current_timeではなく初期t=0を保存すると仮定
+        write(13,*) rmax_dummy_val, 0.0d0, container_width, container_height, cell_size, time_step ! current_timeではなく初期t=0を保存すると仮定
         write(13,*) particle_density, friction_coeff_particle, friction_coeff_wall, GRAVITY_ACCEL, PI_VAL
         write(13,*) young_modulus_particle, young_modulus_wall, poisson_ratio_particle, poisson_ratio_wall, shear_to_normal_stiffness_ratio
         
         if (num_particles > 0) then
             write(13,*) (mass(i), moment_inertia(i), i=1,num_particles)
-            write(13,*) (x_coord(i), z_coord(i), radius(i), i=1,num_particles)
+            write(13,*) (x_coord(i), z_coord(i), radius(i), charge(i), i=1,num_particles)
             write(13,*) (x_disp_incr(i), z_disp_incr(i), rot_disp_incr(i), i=1,num_particles) ! u,v,f (dpm)
             write(13,*) (x_vel(i), z_vel(i), rotation_vel(i), i=1,num_particles)            ! u0,v0,f0
             do i = 1, num_particles

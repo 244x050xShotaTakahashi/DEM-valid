@@ -37,11 +37,9 @@ def read_simulation_data(filename: Union[str, Path] = DATA_FILE_DEFAULT):
             frame_count = 0
             while True:
                 try:
-                    # ヘッダー: num_particles, time, container_width
-                    num_particles_f, time_val, container_width = _read_floats(tokens, fh, 3)
+                    # ヘッダー: num_particles, time, container_width, container_height, rmax
+                    num_particles_f, time_val, container_width, container_height, rmax_val = _read_floats(tokens, fh, 5)
                     num_particles = int(num_particles_f)
-                    # rmax は次の 1 値
-                    rmax_val, = _read_floats(tokens, fh, 1) # 使わないが読み飛ばす
                 except EOFError:
                     break  # 正常終了
 
@@ -81,6 +79,7 @@ def read_simulation_data(filename: Union[str, Path] = DATA_FILE_DEFAULT):
                         "time": time_val,
                         "num_particles": num_particles,
                         "container_width": container_width,
+                        "container_height": container_height,
                         "particles": particles,
                     }
                 )
@@ -119,13 +118,18 @@ def animate(frames_data, output_filename="pem_animation.gif"):
         is_validation_mode = True
         
         # 斜面検証かどうかを判定（粒子のx方向移動量で判定）
-        if len(frames_data) > 10 and frames_data[0]['num_particles'] == 1:
+        if (len(frames_data) > 10 and frames_data[0]['num_particles'] == 1 and 
+            len(frames_data[0]['particles']) > 0):
             initial_x = frames_data[0]['particles'][0]['x']
-            later_x = frames_data[min(10, len(frames_data)-1)]['particles'][0]['x']
-            x_movement = abs(later_x - initial_x)
-            if x_movement > 0.5:  # x方向に大きく移動している場合は斜面検証
-                is_slope_validation = True
+            later_frame_idx = min(10, len(frames_data)-1)
+            if len(frames_data[later_frame_idx]['particles']) > 0:
+                later_x = frames_data[later_frame_idx]['particles'][0]['x']
+                x_movement = abs(later_x - initial_x)
+                if x_movement > 0.5:  # x方向に大きく移動している場合は斜面検証
+                    is_slope_validation = True
     
+    # 表示範囲の計算（上壁がある場合はそれも考慮）
+    container_height = frames_data[0].get('container_height', 0.0)
     max_z_overall = 0.0
     if frames_data[0]['num_particles'] > 0 and frames_data[0]['particles']:
          max_z_overall = max(p['z'] + p['r'] for p in frames_data[0]['particles']) 
@@ -141,8 +145,12 @@ def animate(frames_data, output_filename="pem_animation.gif"):
     if max_z_overall <= 0: # フォールバック
         max_z_overall = container_width * 0.5 if container_width > 0 else 1.0
     
+    # 上壁がある場合は、それを表示範囲に含める
+    if container_height > 0.0:
+        max_z_overall = max(max_z_overall, container_height)
+    
     # 検証モード用の表示範囲調整
-    if is_validation_mode:
+    if is_validation_mode and container_height <= 0.0:
         max_z_overall = max(max_z_overall, 12.0)  # 自由落下検証用に高さを確保
 
     # update_frameの外で固定のテキストオブジェクトを一度だけ作成
@@ -166,7 +174,16 @@ def animate(frames_data, output_filename="pem_animation.gif"):
         # クリア後、軸の範囲やラベル、タイトルを再設定
         current_container_width_for_xlim = data['container_width']
         ax.set_xlim(-0.1 * current_container_width_for_xlim, 1.1 * current_container_width_for_xlim)
-        ax.set_ylim(-0.1 * max_z_overall , 1.2 * max_z_overall)
+        
+        # Y軸の範囲は、上壁がある場合はその高さに合わせる
+        if data.get('container_height', 0.0) > 0.0:
+            y_min = -0.05 * data['container_height']
+            y_max =  1.05 * data['container_height']
+        else:
+            y_min = -0.1 * max_z_overall
+            y_max =  1.2 * max_z_overall
+        ax.set_ylim(y_min, y_max)
+
         ax.set_aspect('equal', adjustable='box') 
         ax.set_xlabel("X coordinate")
         ax.set_ylabel("Z coordinate")
@@ -174,9 +191,21 @@ def animate(frames_data, output_filename="pem_animation.gif"):
         current_container_width = data['container_width']
 
         # 壁の描画
-        ax.plot([0, 0], [0, max_z_overall * 1.15], 'k-', lw=2) # 左壁
+        current_container_height = data.get('container_height', 0.0)
+        
+        # 上壁がある場合は壁の高さを制限、ない場合は表示範囲まで描画
+        if current_container_height > 0.0:
+            wall_height = current_container_height
+        else:
+            wall_height = max_z_overall * 1.15
+        
+        ax.plot([0, 0], [0, wall_height], 'k-', lw=2) # 左壁
         ax.plot([0, current_container_width], [0, 0], 'k-', lw=2) # 床
-        ax.plot([current_container_width, current_container_width], [0, max_z_overall * 1.15], 'k-', lw=2) # 右壁
+        ax.plot([current_container_width, current_container_width], [0, wall_height], 'k-', lw=2) # 右壁
+        
+        # 上壁の描画（container_height > 0の場合のみ）
+        if current_container_height > 0.0:
+            ax.plot([0, current_container_width], [current_container_height, current_container_height], 'k-', lw=2) # 上壁
         
         # 斜面壁の描画 (摩擦斜面検証用のみ)
         if is_validation_mode and is_slope_validation and data['num_particles'] == 1:

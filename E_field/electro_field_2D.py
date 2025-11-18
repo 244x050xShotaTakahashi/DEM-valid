@@ -7,17 +7,17 @@ from scipy.sparse.linalg import spsolve
 import os
 
 # --- Parameters (smaller grid for fast solve) ---
-Lx = 0.02
-Ly = 0.02
-nx = 101
-ny = 101
+Lx = 0.5 # [m]
+Ly = 0.5 # [m]
+nx = 101 # number of grid points
+ny = 101 # number of grid points
 V_plate = 0.0
-V_line = 200.0
-line_count = 4
-line_x_margin = 0.002
-line_spacing = (Lx - 2*line_x_margin) / (line_count-1)
-line_radius = 0.00025
-line_y = 0.018
+V_line = 100.0 # [V]    
+line_count = 4 # number of line electrodes
+line_x_margin = 0.002 # [m]
+line_spacing = (Lx - 2*line_x_margin) / (line_count-1) # [m] # spacing between line electrodes
+line_radius = 0.00025 # [m] # radius of line electrodes
+line_y = 0.018 # [m] # y-coordinate of line electrodes
 
 x = np.linspace(0, Lx, nx)
 y = np.linspace(0, Ly, ny)
