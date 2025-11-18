@@ -524,6 +524,9 @@ contains
         character(len=256) :: line
         real(8) :: xin, zin, rin, qin
         integer :: read_count
+        ! z座標範囲制限用
+        real(8) :: z_min_target, z_max_target, z_range, layer_height
+        integer :: max_layers_for_range, original_layers
 
         r1_val = particle_radius_large
         r2_val = particle_radius_small
@@ -577,6 +580,25 @@ contains
             rmin_val = r2_val             ! 最小半径をr2_valとする
             rn_val = rmax_out + 1.0d-5    ! パッキングのための有効半径
             ipx_calc = idint(container_width / (2.0d0 * rn_val)) ! 1行あたりの粒子数 (概算)
+            
+            ! z座標範囲を0.3〜0.6に制限するために層数を調整
+            z_min_target = 0.3d0
+            z_max_target = 0.6d0
+            z_range = z_max_target - z_min_target
+            layer_height = 2.0d0 * rn_val
+            max_layers_for_range = idint(z_range / layer_height)
+            if (max_layers_for_range < 1) max_layers_for_range = 1
+            
+            ! 元の層数を保存
+            original_layers = particle_gen_layers
+            
+            ! particle_gen_layersを制限範囲に合わせる
+            if (particle_gen_layers > max_layers_for_range) then
+                write(*,*) '警告: 粒子生成層数を', particle_gen_layers, 'から', max_layers_for_range, &
+                          'に制限しました（z=0.3-0.6範囲のため）'
+                particle_gen_layers = max_layers_for_range
+            end if
+            
             current_particle_count = 0
             do i_layer = 1, particle_gen_layers
                 if (mod(i_layer, 2) == 0) then  ! 偶数層
@@ -596,7 +618,8 @@ contains
                     end if
                     num_particles = current_particle_count ! グローバルな粒子数を更新
                     x_coord(num_particles) = 2.0d0 * rn_val * (j_particle_in_layer - 1) + dx_offset
-                    z_coord(num_particles) = 2.0d0 * rn_val * (i_layer - 1) + rn_val
+                    ! z座標を0.3でオフセット
+                    z_coord(num_particles) = z_min_target + 2.0d0 * rn_val * (i_layer - 1) + rn_val
                     rotation_angle(num_particles) = 0.0d0 ! 回転角を初期化
                     charge(num_particles) = default_charge ! 電荷を初期化
                     call custom_random(random_seed, random_uniform_val)
