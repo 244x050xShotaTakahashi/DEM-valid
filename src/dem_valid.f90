@@ -4,7 +4,7 @@
 module simulation_constants_mod
     implicit none
     integer, parameter :: ni_max = 1000  ! ni: 最大粒子数
-    integer, parameter :: nj_max = 14    ! nj: 粒子ごとの最大接触点数 (粒子間10 + 壁4)
+    integer, parameter :: nj_max = 40    ! nj: 粒子ごとの最大接触点数 (粒子間10 + 壁(軸/斜面)30)
     integer, parameter :: nc_max = 20000 ! nc: グリッド内の最大セル数
     real(8), parameter :: PI_VAL = 3.141592653589793d0 ! pi: 円周率
     real(8), parameter :: GRAVITY_ACCEL = 9.80665d0    ! g: 重力加速度
@@ -119,12 +119,32 @@ module cell_system_mod
     save
 end module cell_system_mod
 
+! モジュール: 斜面壁データ
+module wall_data_mod
+    implicit none
+    integer, parameter :: nw_max = 128
+    integer :: num_walls = 0
+    real(8), dimension(nw_max) :: wall_x_start
+    real(8), dimension(nw_max) :: wall_z_start
+    real(8), dimension(nw_max) :: wall_x_end
+    real(8), dimension(nw_max) :: wall_z_end
+    real(8), dimension(nw_max) :: wall_length
+    real(8), dimension(nw_max) :: wall_tangent_x
+    real(8), dimension(nw_max) :: wall_tangent_z
+    real(8), dimension(nw_max) :: wall_normal_x
+    real(8), dimension(nw_max) :: wall_normal_z
+    character(len=256) :: walls_file = 'inputs/walls.dat'
+    logical :: walls_file_exists = .false.
+    save
+end module wall_data_mod
+
 ! メインプログラム
 program two_dimensional_pem
     use simulation_constants_mod
     use simulation_parameters_mod
     use particle_data_mod
     use cell_system_mod
+    use wall_data_mod
     implicit none
 
     integer :: it_step, static_judge_flag          ! static_judge_flag: 静止判定フラグ
@@ -276,6 +296,7 @@ contains
 
     !> inputファイルからパラメータを読み込むサブルーチン
     subroutine read_input_file
+        use wall_data_mod
         implicit none
         character(len=256) :: line, keyword
         character(len=256) :: input_filename
@@ -401,8 +422,87 @@ contains
         else
             write(*,*) '粒子配置: 乱数生成（明示座標ファイルなし）'
         end if
+
+        call read_walls_file
         
     end subroutine read_input_file
+
+    !> 斜面壁ファイルを読み込むサブルーチン
+    subroutine read_walls_file
+        use wall_data_mod
+        implicit none
+        integer :: unit_num, ios, line_no
+        character(len=256) :: line
+        real(8) :: x1, z1, x2, z2
+        real(8) :: dx, dz, length_val
+        logical :: file_exists
+        
+        walls_file_exists = .false.
+        num_walls = 0
+        
+        inquire(file=trim(walls_file), exist=file_exists)
+        if (.not. file_exists) then
+            write(*,*) '斜面壁ファイルなし: ', trim(walls_file)
+            return
+        end if
+        
+        unit_num = 22
+        open(unit=unit_num, file=trim(walls_file), status='old', action='read', iostat=ios)
+        if (ios /= 0) then
+            write(*,*) 'エラー: 斜面壁ファイルを開けません: ', trim(walls_file)
+            stop 'read_walls_file: open failed'
+        end if
+        
+        line_no = 0
+        do
+            read(unit_num, '(A)', iostat=ios) line
+            if (ios /= 0) exit
+            line_no = line_no + 1
+            
+            if (len_trim(line) == 0) cycle
+            if (line(1:1) == '#' .or. line(1:1) == '!') cycle
+            
+            read(line, *, iostat=ios) x1, z1, x2, z2
+            if (ios /= 0) then
+                write(*,*) '警告: 斜面壁ファイル解析失敗 (行', line_no, '): ', trim(line)
+                cycle
+            end if
+            
+            dx = x2 - x1
+            dz = z2 - z1
+            length_val = sqrt(dx*dx + dz*dz)
+            if (length_val < 1.0d-10) then
+                write(*,*) '警告: 壁長さが短すぎるためスキップ (行', line_no, ')'
+                cycle
+            end if
+            
+            if (num_walls >= nw_max) then
+                write(*,*) 'エラー: 壁数が上限 (', nw_max, ') を超過しました'
+                stop 'read_walls_file: too many walls'
+            end if
+            
+            num_walls = num_walls + 1
+            wall_x_start(num_walls) = x1
+            wall_z_start(num_walls) = z1
+            wall_x_end(num_walls) = x2
+            wall_z_end(num_walls) = z2
+            wall_length(num_walls) = length_val
+            wall_tangent_x(num_walls) = dx / length_val
+            wall_tangent_z(num_walls) = dz / length_val
+            wall_normal_x(num_walls) = -wall_tangent_z(num_walls)
+            wall_normal_z(num_walls) =  wall_tangent_x(num_walls)
+        end do
+        
+        close(unit_num)
+        
+        if (num_walls > 0) then
+            walls_file_exists = .true.
+            write(*,*) '斜面壁を読み込み: ', num_walls, ' 本 (', trim(walls_file), ')'
+        else
+            write(*,*) '斜面壁ファイルに有効な壁がありません: ', trim(walls_file)
+        end if
+        
+    end subroutine read_walls_file
 
     !> 初期粒子配置と構成を設定するサブルーチン
     subroutine fposit_sub(rmax_out)
@@ -628,7 +728,7 @@ contains
         implicit none
         integer :: i, cell_block_idx
         integer :: ix_cell, iz_cell ! 宣言をここに移動
-
+    
         ! 連結リストをクリア
         if (nc_max > 0) cell_head(1:nc_max) = 0
         if (nc_max > 0) cell_particle_map(1:nc_max) = 0  ! デバッグ用途
@@ -675,106 +775,166 @@ contains
 
     !> 粒子iと壁との接触力を計算するサブルーチン
     subroutine wcont_sub(particle_idx)
-        use simulation_parameters_mod, only: time_step, container_width
+        use simulation_parameters_mod, only: container_width, container_height
         use particle_data_mod
         use cell_system_mod, only: num_particles
+        use wall_data_mod
+        use simulation_constants_mod, only: nj_max
         implicit none
         integer, intent(in) :: particle_idx ! 対象の粒子インデックス
-
+    
         real(8) :: xi, zi, ri_particle ! 粒子iのx座標, z座標, 半径
         real(8) :: wall_angle_sin, wall_angle_cos, overlap_gap ! 壁の法線ベクトル成分, 重なり量
-        real(8) :: wall_validation_restitution_coeff ! 壁検証用反発係数
         integer :: wall_contact_slot_idx, wall_partner_id ! 壁の接触スロットインデックス, 壁の相手粒子インデックス
-        real(8) :: slope_distance, slope_normal_x, slope_normal_z ! 斜面壁用変数, 斜面の法線ベクトル成分
+        integer :: wall_idx, slot_idx, first_sloped_slot
+        real(8) :: proj_len, closest_x, closest_z
+        real(8) :: vec_x, vec_z, dist_sq, dist_val
+        real(8) :: dynamic_angle_sin, dynamic_angle_cos
+        logical, save :: wall_slot_warning_emitted = .false.
+        real(8) :: en_coeff, et_coeff ! 反発係数 (normal, tangential)
 
         xi = x_coord(particle_idx)
         zi = z_coord(particle_idx)
         ri_particle = radius(particle_idx)
-
+        first_sloped_slot = 14
+    
         ! 左壁 (contact_partner_idx = num_particles + 1)
         wall_contact_slot_idx = 11 ! 元のコードでの左壁用の固定スロット
         wall_partner_id = num_particles + 1
         if (xi < ri_particle) then  ! 左壁と接触
+            en_coeff = 0.5d0
+            et_coeff = 0.5d0
             wall_angle_sin = 0.0d0  ! 法線ベクトル成分 sin(alpha_ij) (粒子中心から壁中心へ向かうベクトル)
             wall_angle_cos = -1.0d0 ! 法線ベクトル成分 cos(alpha_ij)
             overlap_gap = ri_particle - xi ! 元のコードでは dabs(xi)、ここでは重なり量を正とする
             contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
-            call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, 1.0d0, 1.0d0)
+            call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
         else                        ! 接触なし
             normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
             shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
             contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
         end if
-
+    
         ! 下壁 (contact_partner_idx = num_particles + 2)
         wall_contact_slot_idx = 12 ! 元のコードでの下壁用の固定スロット
         wall_partner_id = num_particles + 2
         if (zi < ri_particle) then  ! 下壁と接触
+            en_coeff = 0.5d0
+            et_coeff = 0.5d0
             wall_angle_sin = -1.0d0
             wall_angle_cos = 0.0d0
             overlap_gap = ri_particle - zi 
             contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
-            call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, 1.0d0, 1.0d0)
+            call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
         else                        ! 接触なし
             normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
             shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
             contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
         end if
-
+    
         ! 右壁 (contact_partner_idx = num_particles + 3)
         wall_contact_slot_idx = 13 ! 元のコードでの右壁用の固定スロット
         wall_partner_id = num_particles + 3
         if (xi + ri_particle > container_width) then ! 右壁と接触
+            en_coeff = 0.5d0
+            et_coeff = 0.5d0
             wall_angle_sin = 0.0d0
             wall_angle_cos = 1.0d0
             overlap_gap = (xi + ri_particle) - container_width 
             contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
-            call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, 1.0d0, 1.0d0)
+            call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
         else                                        ! 接触なし
             normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
             shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
             contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
         end if
-
+    
         ! 上壁 (contact_partner_idx = num_particles + 4)
         ! container_height > 0の場合のみ上壁を有効化
         if (container_height > 0.0d0) then
             wall_contact_slot_idx = 10 ! 上壁用の固定スロット
             wall_partner_id = num_particles + 4
             if (zi + ri_particle > container_height) then ! 上壁と接触
+                en_coeff = 0.5d0
+                et_coeff = 0.5d0
                 wall_angle_sin = 1.0d0
                 wall_angle_cos = 0.0d0
                 overlap_gap = (zi + ri_particle) - container_height
                 contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
-                call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, 1.0d0, 1.0d0)
+                call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
             else                                            ! 接触なし
                 normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
                 shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
                 contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
             end if
         end if
-        
-    ! ! 斜面壁  (contact_partner_idx = num_particles + 5)
-    !     wall_contact_slot_idx = 10 ! 斜面壁用の固定スロット
-    !     wall_partner_id = num_particles + 4
-        
-    !     ! 斜面方程式: z = tan(angle) * x + 0 (原点を通る斜面)
-    !     ! 粒子中心から斜面への距離
-    !     slope_normal_x = -sin(slope_angle)
-    !     slope_normal_z = cos(slope_angle)
-    !     slope_distance = slope_normal_x * xi + slope_normal_z * zi
-        
-    !     if (slope_distance < ri_particle) then ! 斜面と接触
-    !         wall_angle_sin = slope_normal_z
-    !         wall_angle_cos = slope_normal_x
-    !         overlap_gap = ri_particle - slope_distance
-    !         contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
-    !         call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, 1.0d0, 1.0d0)
-    !     else                                    ! 接触なし
-    !         normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
-    !         shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
-    !         contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
-    !     end if
+    
+        ! 斜面壁 (任意本数、ファイルで定義)
+        if (num_walls > 0 .and. first_sloped_slot <= nj_max) then
+            do wall_idx = 1, num_walls
+                wall_partner_id = num_particles + 4 + wall_idx
+                en_coeff = 0.5d0
+                et_coeff = 0.5d0
+                proj_len = (xi - wall_x_start(wall_idx)) * wall_tangent_x(wall_idx) + &
+                           (zi - wall_z_start(wall_idx)) * wall_tangent_z(wall_idx)
+                proj_len = max(0.0d0, min(proj_len, wall_length(wall_idx)))
+                closest_x = wall_x_start(wall_idx) + wall_tangent_x(wall_idx) * proj_len
+                closest_z = wall_z_start(wall_idx) + wall_tangent_z(wall_idx) * proj_len
+    
+                vec_x = closest_x - xi
+                vec_z = closest_z - zi
+                dist_sq = vec_x * vec_x + vec_z * vec_z
+    
+                if (dist_sq > 1.0d-20) then
+                    dist_val = sqrt(dist_sq)
+                    dynamic_angle_cos = vec_x / dist_val
+                    dynamic_angle_sin = vec_z / dist_val
+                else
+                    dist_val = 0.0d0
+                    dynamic_angle_cos = -wall_normal_x(wall_idx)
+                    dynamic_angle_sin = -wall_normal_z(wall_idx)
+                end if
+    
+                overlap_gap = ri_particle - dist_val
+    
+                wall_contact_slot_idx = 0
+                do slot_idx = first_sloped_slot, nj_max
+                    if (contact_partner_idx(particle_idx, slot_idx) == wall_partner_id) then
+                        wall_contact_slot_idx = slot_idx
+                        exit
+                    end if
+                end do
+    
+                if (overlap_gap > 0.0d0) then
+                    if (wall_contact_slot_idx == 0) then
+                        do slot_idx = first_sloped_slot, nj_max
+                            if (contact_partner_idx(particle_idx, slot_idx) == 0) then
+                                wall_contact_slot_idx = slot_idx
+                                exit
+                            end if
+                        end do
+                    end if
+    
+                    if (wall_contact_slot_idx == 0) then
+                        if (.not. wall_slot_warning_emitted) then
+                            write(*,*) '警告: 斜面壁との接触を格納するスロットが不足しています (粒子', particle_idx, ')'
+                            wall_slot_warning_emitted = .true.
+                        end if
+                        cycle
+                    end if
+    
+                    contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
+                    call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, dynamic_angle_sin, dynamic_angle_cos, &
+                                  overlap_gap, en_coeff, et_coeff)
+                else
+                    if (wall_contact_slot_idx /= 0) then
+                        normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
+                        shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
+                        contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
+                    end if
+                end if
+            end do
+        end if
     end subroutine wcont_sub
 
     !> 粒子iと他の粒子との接触力を計算するサブルーチン

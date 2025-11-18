@@ -7,6 +7,45 @@ from typing import Union
 import sys
 
 DATA_FILE_DEFAULT = Path(__file__).resolve().parent.parent / "data" / "graph11.d"
+WALLS_FILE_DEFAULT = Path(__file__).resolve().parent.parent / "inputs" / "walls.dat"
+
+def read_walls_data(filename: Union[str, Path] = WALLS_FILE_DEFAULT):
+    """walls.dat を読み込み、斜面壁のリストを返す。
+    
+    各行は x_start z_start x_end z_end の形式。
+    コメント行（#や!で始まる）や空行はスキップされる。
+    """
+    walls = []
+    try:
+        with open(filename, "r") as fh:
+            for line in fh:
+                line = line.strip()
+                # コメント行や空行をスキップ
+                if not line or line.startswith('#') or line.startswith('!'):
+                    continue
+                
+                # コメント部分を削除
+                if '#' in line:
+                    line = line.split('#')[0].strip()
+                if '!' in line:
+                    line = line.split('!')[0].strip()
+                
+                try:
+                    values = [float(x) for x in line.split()]
+                    if len(values) >= 4:
+                        walls.append({
+                            'x_start': values[0],
+                            'z_start': values[1],
+                            'x_end': values[2],
+                            'z_end': values[3]
+                        })
+                except ValueError:
+                    continue  # 解析できない行はスキップ
+    except FileNotFoundError:
+        # ファイルが見つからない場合は空のリストを返す（エラーにしない）
+        pass
+    
+    return walls
 
 def read_simulation_data(filename: Union[str, Path] = DATA_FILE_DEFAULT):
     """graph11.d を読み込み、各タイムステップのデータを辞書のリストとして返す。
@@ -97,7 +136,7 @@ def read_simulation_data(filename: Union[str, Path] = DATA_FILE_DEFAULT):
     print(f"\r  {len(frames_data)} フレームの読み込み完了!        ")
     return frames_data
 
-def animate(frames_data, output_filename="pem_animation.gif"):
+def animate(frames_data, output_filename="pem_animation.gif", walls_data=None):
     if not frames_data:
         print("アニメーションするデータがありません。")
         return
@@ -107,6 +146,10 @@ def animate(frames_data, output_filename="pem_animation.gif"):
     matplotlib.rcParams['font.family'] = 'DejaVu Sans'
     
     fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # 斜面壁データがない場合は空のリストを使用
+    if walls_data is None:
+        walls_data = []
     
     # 描画範囲とアスペクト比は最初に一度だけ設定
     container_width = frames_data[0]['container_width']
@@ -207,8 +250,19 @@ def animate(frames_data, output_filename="pem_animation.gif"):
         if current_container_height > 0.0:
             ax.plot([0, current_container_width], [current_container_height, current_container_height], 'k-', lw=2) # 上壁
         
-        # 斜面壁の描画 (摩擦斜面検証用のみ)
-        if is_validation_mode and is_slope_validation and data['num_particles'] == 1:
+        # 斜面壁の描画（walls.datから読み込んだ壁を描画）
+        if walls_data:
+            for wall in walls_data:
+                ax.plot([wall['x_start'], wall['x_end']], 
+                       [wall['z_start'], wall['z_end']], 
+                       'b-', lw=2.5, alpha=0.8)
+            # 最初のフレームでのみ凡例を追加
+            if frame_idx == 0 and walls_data:
+                ax.plot([], [], 'b-', lw=2.5, alpha=0.8, label=f'Slope Walls ({len(walls_data)})')
+                ax.legend(loc='upper right')
+        
+        # 旧：斜面壁の描画 (摩擦斜面検証用のみ、walls_dataがない場合のフォールバック)
+        elif is_validation_mode and is_slope_validation and data['num_particles'] == 1:
             # 30度の斜面を描画
             slope_angle = 30.0 * np.pi / 180.0  # 30度をラジアンに変換
             slope_x_end = min(current_container_width, max_z_overall * 1.15 / np.tan(slope_angle))
@@ -278,17 +332,34 @@ if __name__ == "__main__":
     else:
         output_file = "pem_animation.gif"
     
+    # 斜面壁ファイルの処理（オプション）
+    if len(sys.argv) > 3:
+        walls_file = Path(sys.argv[3])
+    else:
+        walls_file = WALLS_FILE_DEFAULT
+    
     print("=" * 60)
     print("PEM アニメーション作成ツール")
     print("=" * 60)
     print(f"データファイル: {data_file}")
     print(f"出力ファイル: {output_file}")
+    print(f"斜面壁ファイル: {walls_file}")
+    print("=" * 60)
+    
+    # 斜面壁データの読み込み
+    walls = read_walls_data(walls_file)
+    if walls:
+        print(f"斜面壁を読み込みました: {len(walls)} 本")
+        for i, wall in enumerate(walls, 1):
+            print(f"  壁{i}: ({wall['x_start']:.3f}, {wall['z_start']:.3f}) -> ({wall['x_end']:.3f}, {wall['z_end']:.3f})")
+    else:
+        print("斜面壁ファイルが見つからないか、壁が定義されていません。")
     print("=" * 60)
     
     all_frames_data = read_simulation_data(data_file)
     
     if all_frames_data:
-        animate(all_frames_data, output_file)
+        animate(all_frames_data, output_file, walls_data=walls)
         print("\n" + "=" * 60)
         print("処理が完了しました!")
         print("=" * 60)
