@@ -2,8 +2,8 @@
 # 粒子を容器に落下させて堆積山を形成し、安息角を測定
 
 # === シミュレーション制御パラメータ ===
-TIME_STEP                   5.0e-7      # 時間刻み [s]
-MAX_CALCULATION_STEPS       5000000     # 最大計算ステップ数
+TIME_STEP                   1.0e-7      # 時間刻み [s]
+MAX_CALCULATION_STEPS       50000000     # 最大計算ステップ数
 
 # === 材料物性値 ===
 YOUNG_MODULUS_PARTICLE      4.9e9       # 粒子のヤング率 [Pa]
@@ -17,11 +17,11 @@ FRICTION_COEFF_PARTICLE     0.3         # 粒子間摩擦係数 [-]
 FRICTION_COEFF_WALL         0.3         # 壁-粒子間摩擦係数 [-]
 
 # === 粒子生成パラメータ ===
-PARTICLE_RADIUS_LARGE       1.0e-2      # 大きな粒子の半径 [m]
-PARTICLE_RADIUS_SMALL       5.0e-3      # 小さな粒子の半径 [m]
-CONTAINER_WIDTH             0.3         # 容器の幅 [m]
+PARTICLE_RADIUS_LARGE       1.0e-3      # 大きな粒子の半径 [m]
+PARTICLE_RADIUS_SMALL       1.0e-3      # 小さな粒子の半径 [m]
+CONTAINER_WIDTH             1.5         # 容器の幅 [m]
 CONTAINER_HEIGHT            0.0         # 容器の高さ [m] (0.0=制限なし)
-PARTICLE_GEN_LAYERS         22          # 初期粒子生成層数 [-]
+PARTICLE_GEN_LAYERS         30          # 初期粒子生成層数 [-]
 RANDOM_SEED                 584287      # 乱数シード [-]
 
 # === セル法アルゴリズム制御 ===
@@ -29,7 +29,8 @@ DISABLE_CELL_ALGORITHM      0           # セル法アルゴリズム (1=OFF, 0=
 STOP_WHEN_STATIC            1           # 静止検出時に停止 (1=ON, 0=OFF)
 
 # === 出力制御パラメータ ===
-OUTPUT_INTERVAL     10000       # 通常モード出力間隔 [ステップ]
+OUTPUT_INTERVAL     50000       # 通常モード出力間隔 [ステップ]
+
 
 
 

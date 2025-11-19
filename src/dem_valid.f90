@@ -3,9 +3,9 @@
 ! モジュール: シミュレーション定数 (配列サイズ、数学定数)
 module simulation_constants_mod
     implicit none
-    integer, parameter :: ni_max = 1000  ! ni: 最大粒子数
+    integer, parameter :: ni_max = 50000  ! ni: 最大粒子数
     integer, parameter :: nj_max = 40    ! nj: 粒子ごとの最大接触点数 (粒子間10 + 壁(軸/斜面)30)
-    integer, parameter :: nc_max = 20000 ! nc: グリッド内の最大セル数
+    integer, parameter :: nc_max = 500000 ! nc: グリッド内の最大セル数 
     real(8), parameter :: PI_VAL = 3.141592653589793d0 ! pi: 円周率
     real(8), parameter :: GRAVITY_ACCEL = 9.80665d0    ! g: 重力加速度
 end module simulation_constants_mod
@@ -52,6 +52,7 @@ module simulation_parameters_mod
     real(8) :: coulomb_constant               ! k: クーロン定数 [N⋅m²/C²]
     real(8) :: default_charge                 ! デフォルトの粒子電荷 [C]
     logical :: enable_coulomb_force           ! クーロン力の有効化フラグ
+    character(len=256) :: output_dir          ! 出力ディレクトリパス
 
     save
 end module simulation_parameters_mod
@@ -183,18 +184,22 @@ program two_dimensional_dem
             call ncel_sub
             
             ! 全粒子の合力をクリア
+            !$omp parallel do private(i)
             do i = 1, num_particles
                 x_force_sum(i) = 0.0d0
                 z_force_sum(i) = 0.0d0
                 moment_sum(i) = 0.0d0
             end do
+            !$omp end parallel do
             
+            !$omp parallel do schedule(dynamic) private(i)
             do i = 1, num_particles
                 ! 粒子と壁との接触力計算
                 call wcont_sub(i)
                 ! 粒子間の接触力計算
                 call pcont_sub(i, rmax_particle_radius)
             end do
+            !$omp end parallel do
             
             ! クーロン力の計算
             call coulomb_force_sub()
@@ -210,18 +215,22 @@ program two_dimensional_dem
             call ncel_sub
             
             ! 全粒子の合力をクリア
+            !$omp parallel do private(i)
             do i = 1, num_particles
                 x_force_sum(i) = 0.0d0
                 z_force_sum(i) = 0.0d0
                 moment_sum(i) = 0.0d0
             end do
+            !$omp end parallel do
             
+            !$omp parallel do schedule(dynamic) private(i)
             do i = 1, num_particles
                 ! 粒子と壁との接触力計算
                 call wcont_sub(i)
                 ! 粒子間の接触力計算
                 call pcont_sub(i, rmax_particle_radius)
             end do
+            !$omp end parallel do
             
             ! クーロン力の計算
             call coulomb_force_sub()
@@ -256,9 +265,9 @@ program two_dimensional_dem
     ! バックアップデータの出力
     call bfout_sub
 
-    close(10) ! data/graph11.d (グラフィックデータファイル1)
-    close(11) ! data/graph21.d (グラフィックデータファイル2)
-    close(13) ! data/backl.d (バックアップファイル、bfout_subで開かれていれば)
+    close(10) ! particles.csv
+    close(11) ! contacts.csv
+    close(13) ! backl.d
 
     ! 計算時間計測終了
     call system_clock(end_time)
@@ -389,6 +398,17 @@ contains
         else
             input_filename = "inputs/input_valid.dat"
         end if
+        
+        ! 出力ディレクトリの決定（第2引数）
+        if (command_argument_count() >= 2) then
+            call get_command_argument(2, output_dir)
+        else
+            output_dir = "data"
+        end if
+
+        ! 出力ディレクトリの作成
+        call execute_command_line('mkdir -p ' // trim(output_dir), wait=.true.)
+        write(*,*) '出力ディレクトリ: ', trim(output_dir)
         
         write(*,*) 'inputファイルを読み込み中: ', trim(input_filename)
         
@@ -776,6 +796,7 @@ contains
         ! 粒子のポアソン比に基づいてせん断弾性係数と法線方向弾性係数の比(so)を計算
         shear_to_normal_stiffness_ratio = 1.0d0 / (2.0d0 * (1.0d0 + poisson_ratio_particle))
 
+        !$omp parallel do private(i)
         do i = 1, num_particles
             ! 質量: 3D球体 V = 4/3 pi r^3。2Dディスク (面積 pi r^2)の場合、deが面密度ならば。
             ! 元のコードは2Dシミュレーションの文脈でも3D球体の体積で質量を計算しているように見える。
@@ -794,6 +815,7 @@ contains
             end if  
 
         end do
+        !$omp end parallel do
     end subroutine inmat_sub
 
     !> 接触力関連の配列を初期化するサブルーチン
@@ -806,6 +828,7 @@ contains
 
         ! 実際の粒子数まで繰り返す
         if (num_particles > 0) then
+            !$omp parallel do private(i, j)
             do i = 1, num_particles 
                 do j = 1, nj_max
                     normal_force_contact(i, j) = 0.0d0
@@ -814,6 +837,7 @@ contains
                     previous_overlap(i, j) = -1.0d0  ! 負値で「接触なし」を表現
                 end do
             end do
+            !$omp end parallel do
             ! 増分変位を最初にゼロで初期化
             x_disp_incr(1:num_particles) = 0.0d0
             z_disp_incr(1:num_particles) = 0.0d0
@@ -1205,6 +1229,7 @@ contains
         if (.not. enable_coulomb_force) return
         
         ! 全粒子ペアについてクーロン力を計算
+        !$omp parallel do schedule(dynamic) private(i, j, qi, qj, dx, dz, dist_sq, dist, dist_cubed, force_magnitude, fx, fz)
         do i = 1, num_particles - 1
             qi = charge(i)
             if (abs(qi) < 1.0d-20) cycle ! 電荷がゼロならスキップ
@@ -1232,14 +1257,19 @@ contains
                 fz = force_magnitude * dz
                 
                 ! 粒子iに力を加算（粒子jへ向かう力）
+                !$omp atomic
                 x_force_sum(i) = x_force_sum(i) + fx
+                !$omp atomic
                 z_force_sum(i) = z_force_sum(i) + fz
                 
                 ! 粒子jに反作用力を加算（粒子iへ向かう力）
+                !$omp atomic
                 x_force_sum(j) = x_force_sum(j) - fx
+                !$omp atomic
                 z_force_sum(j) = z_force_sum(j) - fz
             end do
         end do
+        !$omp end parallel do
     end subroutine coulomb_force_sub
 
     !> 蛙飛び法による粒子の位置と速度を更新するサブルーチン
@@ -1263,16 +1293,19 @@ contains
         
         if (phase == 0) then
             ! 初回のみ: v(0) → v(Δt/2) への変換
+            !$omp parallel do private(i)
             do i = 1, num_particles
                 x_vel(i) = x_vel(i) + (x_force_sum(i)/mass(i)) * (dt * 0.5d0)
                 z_vel(i) = z_vel(i) + (z_force_sum(i)/mass(i) - grav) * (dt * 0.5d0)
                 rotation_vel(i) = rotation_vel(i) + (moment_sum(i)/moment_inertia(i)) * (dt * 0.5d0)
             end do
+            !$omp end parallel do
             judge_static = 0
             
         else if (phase == 1) then
             ! フェーズ1: 位置更新のみ
             sum_abs_disp = 0.0d0
+            !$omp parallel do private(i) reduction(+:sum_abs_disp)
             do i = 1, num_particles
                 ! 位置更新: x(t+Δt) = x(t) + v(t+Δt/2) * Δt
                 x_disp_incr(i) = x_vel(i) * dt
@@ -1285,6 +1318,7 @@ contains
                 
                 sum_abs_disp = sum_abs_disp + abs(x_disp_incr(i)) + abs(z_disp_incr(i))
             end do
+            !$omp end parallel do
             
             ! 静止判定
             if (num_particles > 0) then
@@ -1300,12 +1334,14 @@ contains
             
         else if (phase == 2) then
             ! フェーズ2: 速度更新のみ（新しい位置での力を使用）
+            !$omp parallel do private(i)
             do i = 1, num_particles
                 ! 速度更新: v(t+3Δt/2) = v(t+Δt/2) + a(t+Δt) * Δt
                 x_vel(i) = x_vel(i) + (x_force_sum(i)/mass(i)) * dt
                 z_vel(i) = z_vel(i) + (z_force_sum(i)/mass(i) - grav) * dt
                 rotation_vel(i) = rotation_vel(i) + (moment_sum(i)/moment_inertia(i)) * dt
             end do
+            !$omp end parallel do
             ! judge_static = 0 ! phase 2では静止判定をリセットしない
         end if
     end subroutine nposit_leapfrog_sub
@@ -1488,8 +1524,11 @@ contains
 
         ! 粒子p_jに反作用力を適用 (相手が粒子の場合)
         if (p_j <= num_particles .and. contact_slot_idx_for_pi <= 10) then ! 元の jk < 10 は粒子間接触のチェック
+            !$omp atomic
             x_force_sum(p_j) = x_force_sum(p_j) + total_normal_force * angle_cos - total_shear_force * angle_sin
+            !$omp atomic
             z_force_sum(p_j) = z_force_sum(p_j) + total_normal_force * angle_sin + total_shear_force * angle_cos
+            !$omp atomic
             moment_sum(p_j) = moment_sum(p_j) - rj_val * total_shear_force ! p_jに対するせん断力は同じ大きさ、逆向きの回転効果
             
             ! デバッグ出力 (検証モードのみ)
@@ -1506,7 +1545,7 @@ contains
     !> グラフィック用データを出力するサブルーチン
     subroutine gfout_sub(iter_step, time_val, rmax_val)
         use simulation_constants_mod, only: nj_max, GRAVITY_ACCEL
-        use simulation_parameters_mod, only: container_width, container_height, time_step
+        use simulation_parameters_mod, only: container_width, container_height, time_step, output_dir
         use particle_data_mod
         use cell_system_mod, only: num_particles
         implicit none
@@ -1517,11 +1556,14 @@ contains
         real(8), allocatable :: vx_out(:), vz_out(:), rotation_vel_out(:)
 
         if (iter_step == 1) then
-            open(unit=10, file='data/graph11.d', status='replace', action='write')
-            open(unit=11, file='data/graph21.d', status='replace', action='write')
+            open(unit=10, file=trim(output_dir)//'/particles.csv', status='replace', action='write')
+            open(unit=11, file=trim(output_dir)//'/contacts.csv', status='replace', action='write')
+            
+            ! ヘッダー行
+            write(10, '(A)') 'step,time,id,x,z,radius,vx,vz,omega,angle,mass,charge'
+            write(11, '(A)') 'step,time,p1_id,p2_id,normal_force,shear_force'
         end if
 
-        write(10,*) num_particles, time_val, container_width, container_height, rmax_val
         if (num_particles > 0) then
             ! 出力用補正速度の準備（蛙飛び法のみ 0.5*dt*加速度で補正）
             dt = time_step
@@ -1533,23 +1575,29 @@ contains
                 vx_out(i) = x_vel(i) - 0.5d0 * dt * (x_force_sum(i) / mass(i))
                 vz_out(i) = z_vel(i) - 0.5d0 * dt * (z_force_sum(i) / mass(i) - grav)
                 rotation_vel_out(i) = rotation_vel(i) - 0.5d0 * dt * (moment_sum(i) / moment_inertia(i))
+                
+                ! CSV形式で出力 (カンマ区切り)
+                write(10, '(I0,A,ES14.7,A,I0,A,ES14.7,A,ES14.7,A,ES14.7,A,ES14.7,A,ES14.7,A,ES14.7,A,ES14.7,A,ES14.7,A,ES14.7)') &
+                    iter_step, ',', time_val, ',', i, ',', &
+                    x_coord(i), ',', z_coord(i), ',', radius(i), ',', &
+                    vx_out(i), ',', vz_out(i), ',', rotation_vel_out(i), ',', &
+                    rotation_angle(i), ',', mass(i), ',', charge(i)
             end do
-
-            write(10,'(1000(ES12.5,1X,ES12.5,1X,ES12.5,2X))') (sngl(x_coord(i)), sngl(z_coord(i)), sngl(radius(i)), i=1,num_particles)
-            write(10,'(1000(ES12.5,1X,ES12.5,1X,ES12.5,2X))') (sngl(vx_out(i)), sngl(vz_out(i)), sngl(rotation_vel_out(i)), i=1,num_particles)
-            write(10,'(1000(ES12.5,2X))') (sngl(rotation_angle(i)), i=1,num_particles)
+            
+            ! 接触データの出力
+            do i = 1, num_particles
+                do j = 1, nj_max
+                    if (contact_partner_idx(i, j) > i) then
+                        write(11, '(I0,A,ES14.7,A,I0,A,I0,A,ES14.7,A,ES14.7)') &
+                            iter_step, ',', time_val, ',', i, ',', contact_partner_idx(i, j), ',', &
+                            normal_force_contact(i, j), ',', shear_force_contact(i, j)
+                    end if
+                end do
+            end do
+            
+            deallocate(vx_out, vz_out, rotation_vel_out)
         end if
         
-        ! 接触力の出力 (オプション、graph21.dより)
-        write(11,*) 'Time: ', time_val 
-        if (num_particles > 0) then
-            do i = 1, num_particles
-                 write(11,'(A,I5,A,I5)') 'Particle: ', i, ' NumContacts: ', count(contact_partner_idx(i,1:nj_max) > 0)
-                 write(11,'(2X,A,13(ES10.3,1X))') 'ShearF: ', (shear_force_contact(i,j), j=1,nj_max)
-                 write(11,'(2X,A,13(ES10.3,1X))') 'NormalF:', (normal_force_contact(i,j), j=1,nj_max)
-                 write(11,'(2X,A,13(I5,2X))')    'Partner:', (contact_partner_idx(i,j), j=1,nj_max)
-            end do
-        end if
     end subroutine gfout_sub
 
     !> バックアップデータを出力するサブルーチン
@@ -1569,7 +1617,7 @@ contains
            rmax_dummy_val = 0.0d0
         end if
 
-        open(unit=13, file='data/backl.d', status='replace', action='write')
+        open(unit=13, file=trim(output_dir)//'/backl.d', status='replace', action='write')
 
         write(13,*) num_particles, cells_x_dir, cells_z_dir, particle_gen_layers
         write(13,*) rmax_dummy_val, 0.0d0, container_width, container_height, cell_size, time_step ! current_timeではなく初期t=0を保存すると仮定
