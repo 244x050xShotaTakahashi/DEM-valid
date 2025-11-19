@@ -3,7 +3,7 @@
 
 # === シミュレーション制御パラメータ ===
 TIME_STEP                   5.0e-7      # 時間刻み [s]
-MAX_CALCULATION_STEPS       2000000     # 最大計算ステップ数
+MAX_CALCULATION_STEPS       10000000     # 最大計算ステップ数
 
 # === 材料物性値 ===
 YOUNG_MODULUS_PARTICLE      4.9e9       # 粒子のヤング率 [Pa]
@@ -29,4 +29,4 @@ DISABLE_CELL_ALGORITHM      0           # セル法アルゴリズム (1=OFF, 0=
 STOP_WHEN_STATIC            1           # 静止検出時に停止 (1=ON, 0=OFF)
 
 # === 出力制御パラメータ ===
-OUTPUT_INTERVAL_NORMAL      50000       # 通常モード出力間隔 [ステップ]
+OUTPUT_INTERVAL      50000              # 出力間隔 [ステップ]

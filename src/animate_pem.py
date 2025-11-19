@@ -255,7 +255,7 @@ def animate(frames_data, output_filename="pem_animation.gif", walls_data=None):
             for wall in walls_data:
                 ax.plot([wall['x_start'], wall['x_end']], 
                        [wall['z_start'], wall['z_end']], 
-                       'b-', lw=2.5, alpha=0.8)
+                       'b-', lw=2.5, alpha=0.8,color='black')
             # 最初のフレームでのみ凡例を追加
             if frame_idx == 0 and walls_data:
                 ax.plot([], [], 'b-', lw=2.5, alpha=0.8, label=f'Slope Walls ({len(walls_data)})')

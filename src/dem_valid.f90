@@ -139,7 +139,7 @@ module wall_data_mod
 end module wall_data_mod
 
 ! メインプログラム
-program two_dimensional_pem
+program two_dimensional_dem
     use simulation_constants_mod
     use simulation_parameters_mod
     use particle_data_mod
@@ -294,6 +294,82 @@ program two_dimensional_pem
     stop
 contains
 
+    !===============================================================
+    ! 粒子の直径リスト (m) をファイルから読み込み，半径配列 r_part(:) を設定する
+    !   - filename : 入力ファイル名
+    !   - r_part   : 半径 [m] を格納する配列（呼び出し側で allocate 済み）
+    !   - Nmax     : r_part の最大要素数 (= size(r_part))
+    !   - Nread    : 実際に読み込んだ粒子数（出力）
+    !
+    ! 入力ファイル仕様：
+    !   - テキストファイル
+    !   - 1 列目に直径 [m]（実数）
+    !   - ヘッダ行や # で始まるコメント行、空行はスキップ
+    !===============================================================
+    subroutine load_particle_radii_from_file(filename, r_part, Nmax, Nread)
+        implicit none
+        character(len=*), intent(in)  :: filename
+        real(8),          intent(out) :: r_part(:)
+        integer,          intent(in)  :: Nmax
+        integer,          intent(out) :: Nread
+
+        integer :: unit
+        integer :: ios_line, ios_val
+        character(len=256) :: line
+        real(8) :: d_tmp   ! 読み込んだ直径 [m]
+
+        Nread = 0
+
+        ! ファイルを開く
+        open(newunit=unit, file=filename, status='old', action='read', &
+            iostat=ios_line)
+        if (ios_line /= 0) then
+            write(*,*) '*** ERROR[load_particle_radii_from_file]: ', &
+                        'cannot open file: ', trim(filename)
+            stop
+        end if
+
+        do
+            ! 1 行ずつ文字列として読み込む
+            read(unit, '(A)', iostat=ios_line) line
+            if (ios_line /= 0) exit   ! EOF or read error
+
+            ! 空行はスキップ
+            if (len_trim(line) == 0) cycle
+
+            ! コメント行（先頭が #）はスキップ
+            if (line(1:1) == '#') cycle
+
+            ! 文字列から実数（直径）を読み取る
+            read(line, *, iostat=ios_val) d_tmp
+            if (ios_val /= 0) then
+                ! 数値に変換できない行（ヘッダなど）はスキップ
+                cycle
+            end if
+
+            ! 粒子数カウント
+            Nread = Nread + 1
+            if (Nread > Nmax) then
+                write(*,*) '*** ERROR[load_particle_radii_from_file]: ', &
+                            'too many particles in file: ', trim(filename)
+                write(*,*) '    Nmax = ', Nmax
+                stop
+            end if
+
+            ! 直径 -> 半径に変換して格納
+            r_part(Nread) = 0.5d0 * d_tmp
+        end do
+
+        close(unit)
+
+        if (Nread == 0) then
+            write(*,*) '*** ERROR[load_particle_radii_from_file]: ', &
+                        'no valid data found in file: ', trim(filename)
+            stop
+        end if
+
+    end subroutine load_particle_radii_from_file
+
     !> inputファイルからパラメータを読み込むサブルーチン
     subroutine read_input_file
         use wall_data_mod
@@ -400,7 +476,9 @@ contains
                 case ('COULOMB_CONSTANT')
                     coulomb_constant = value
                 case ('DEFAULT_CHARGE')
-                    default_charge = value
+                    default_charge = 0.0d0
+                case ('OUTPUT_INTERVAL')
+                    output_interval = int(value)
                 case default
                     write(*,*) '警告: 不明なキーワード: ', trim(keyword)
             end select
@@ -1228,7 +1306,7 @@ contains
                 z_vel(i) = z_vel(i) + (z_force_sum(i)/mass(i) - grav) * dt
                 rotation_vel(i) = rotation_vel(i) + (moment_sum(i)/moment_inertia(i)) * dt
             end do
-            judge_static = 0
+            ! judge_static = 0 ! phase 2では静止判定をリセットしない
         end if
     end subroutine nposit_leapfrog_sub
 
@@ -1526,4 +1604,4 @@ contains
 
     end subroutine custom_random
 
-end program two_dimensional_pem
+end program two_dimensional_dem
