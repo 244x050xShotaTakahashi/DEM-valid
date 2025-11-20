@@ -10,7 +10,7 @@ DEMシミュレーションの出力データから粒子堆積物の安息角�
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from typing import Union, Tuple, List, Dict
+from typing import Union, Tuple, List, Dict, Optional
 import sys
 from scipy.stats import linregress
 
@@ -102,7 +102,10 @@ def read_final_frame(filename: Union[str, Path] = "data/graph11.d") -> Dict:
 
 
 def detect_surface_particles(x: np.ndarray, z: np.ndarray, r: np.ndarray, 
-                             container_width: float) -> Tuple[np.ndarray, np.ndarray]:
+                             container_width: float,
+                             left_margin: float = 0.1,
+                             right_margin: float = 0.1,
+                             center_margin: float = 0.1) -> Tuple[np.ndarray, np.ndarray]:
     """
     堆積物の表面粒子を検出
     
@@ -111,6 +114,9 @@ def detect_surface_particles(x: np.ndarray, z: np.ndarray, r: np.ndarray,
         z: 粒子のz座標配列
         r: 粒子の半径配列
         container_width: 容器の幅
+        left_margin: 左側のマージン比率 (0.0-1.0)
+        right_margin: 右側のマージン比率 (0.0-1.0)
+        center_margin: 中央のマージン比率 (0.0-1.0)
         
     Returns:
         左斜面の表面粒子(x, z)、右斜面の表面粒子(x, z)
@@ -118,11 +124,7 @@ def detect_surface_particles(x: np.ndarray, z: np.ndarray, r: np.ndarray,
     # 容器の中央
     center_x = container_width / 2.0
     
-    # 左右の領域に分割（中央の20%は除外）
-    left_margin = 0.1
-    right_margin = 0.1
-    center_margin = 0.1
-    
+    # 左右の領域に分割
     left_region = (x < center_x - center_margin * container_width) & (x > left_margin * container_width)
     right_region = (x > center_x + center_margin * container_width) & (x < (1 - right_margin) * container_width)
     
@@ -138,6 +140,9 @@ def detect_surface_particles(x: np.ndarray, z: np.ndarray, r: np.ndarray,
         # x座標でビンを作成
         num_bins = 20
         x_min, x_max = region_x.min(), region_x.max()
+        if x_min == x_max:
+             return np.array([x_min]), np.array([region_z[0]])
+
         bins = np.linspace(x_min, x_max, num_bins)
         
         surface_x = []
@@ -266,6 +271,9 @@ def plot_repose_angle(data: Dict, left_surface: Tuple, right_surface: Tuple,
     ax.axvline(x=0, color='black', linewidth=2)
     ax.axvline(x=data['container_width'], color='black', linewidth=2)
     
+    # 指定された範囲の枠を描画
+    # 範囲外が除外されている場合、その範囲を示す
+    
     plt.tight_layout()
     
     if output_file:
@@ -277,7 +285,9 @@ def plot_repose_angle(data: Dict, left_surface: Tuple, right_surface: Tuple,
 
 def analyze_repose_angle(data_file: str = "data/graph11.d", 
                         output_dir: str = "results",
-                        case_name: str = "repose_angle") -> Dict:
+                        case_name: str = "repose_angle",
+                        x_range: Optional[Tuple[float, float]] = None,
+                        z_range: Optional[Tuple[float, float]] = None) -> Dict:
     """
     安息角を測定してCSVに保存
     
@@ -285,6 +295,8 @@ def analyze_repose_angle(data_file: str = "data/graph11.d",
         data_file: 入力データファイル
         output_dir: 出力ディレクトリ
         case_name: ケース名
+        x_range: x座標の範囲 (min, max)
+        z_range: z座標の範囲 (min, max)
         
     Returns:
         測定結果を含む辞書
@@ -296,8 +308,32 @@ def analyze_repose_angle(data_file: str = "data/graph11.d",
     
     # 表面粒子を検出
     print("表面粒子を検出中...")
+    
+    mask = np.ones(len(data['x']), dtype=bool)
+    
+    if x_range:
+        print(f"x座標範囲: {x_range[0]} <= x <= {x_range[1]}")
+        mask &= (data['x'] >= x_range[0]) & (data['x'] <= x_range[1])
+        
+    if z_range:
+        print(f"z座標範囲: {z_range[0]} <= z <= {z_range[1]}")
+        mask &= (data['z'] >= z_range[0]) & (data['z'] <= z_range[1])
+
+    filtered_x = data['x'][mask]
+    filtered_z = data['z'][mask]
+    filtered_r = data['r'][mask]
+    
+    print(f"解析対象粒子数: {len(filtered_x)} (全粒子数: {len(data['x'])})")
+    
+    # 範囲指定がある場合はマージンを無効化（または調整）して呼び出す
+    # center_marginがあると中央が抜けてしまうため、範囲指定時は0にする
+    margin_val = 0.1
+    if x_range is not None:
+        margin_val = 0.0
+        
     left_surface, right_surface = detect_surface_particles(
-        data['x'], data['z'], data['r'], data['container_width']
+        filtered_x, filtered_z, filtered_r, data['container_width'],
+        left_margin=margin_val, right_margin=margin_val, center_margin=margin_val
     )
     
     left_x, left_z = left_surface
@@ -325,7 +361,10 @@ def analyze_repose_angle(data_file: str = "data/graph11.d",
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # プロット作成
+    # プロット作成（全データに対してプロットし、解析範囲を強調する方がわかりやすいが、
+    # ここではフィルタリング後のデータで表面検出を行っているため、元データ全体を渡す）
+    # ただし、表面粒子座標はフィルタリング後のもの。
+    
     plot_file = output_path / f"{case_name}_repose_angle.png"
     plot_repose_angle(data, left_surface, right_surface, left_fit, right_fit, 
                      output_file=str(plot_file))
@@ -343,6 +382,12 @@ def analyze_repose_angle(data_file: str = "data/graph11.d",
         f.write(f"right_r_squared,{right_r2}\n")
         f.write(f"average_angle_deg,{avg_angle}\n")
         f.write(f"std_angle_deg,{std_angle}\n")
+        if x_range:
+            f.write(f"x_range_min,{x_range[0]}\n")
+            f.write(f"x_range_max,{x_range[1]}\n")
+        if z_range:
+            f.write(f"z_range_min,{z_range[0]}\n")
+            f.write(f"z_range_max,{z_range[1]}\n")
     
     print(f"結果を保存しました: {csv_file}")
     
@@ -367,15 +412,25 @@ if __name__ == "__main__":
     parser.add_argument('--name', '-n', default='repose_angle',
                        help='ケース名 (デフォルト: repose_angle)')
     
+    parser.add_argument('--x-min', type=float, help='x座標の最小値')
+    parser.add_argument('--x-max', type=float, help='x座標の最大値')
+    parser.add_argument('--z-min', type=float, help='z座標の最小値')
+    parser.add_argument('--z-max', type=float, help='z座標の最大値')
+
     args = parser.parse_args()
     
+    x_range = None
+    if args.x_min is not None and args.x_max is not None:
+        x_range = (args.x_min, args.x_max)
+        
+    z_range = None
+    if args.z_min is not None and args.z_max is not None:
+        z_range = (args.z_min, args.z_max)
+    
     try:
-        results = analyze_repose_angle(args.data, args.output, args.name)
+        results = analyze_repose_angle(args.data, args.output, args.name, x_range, z_range)
         print("\n=== 測定完了 ===")
         print(f"平均安息角: {results['average_angle']:.2f}°")
     except Exception as e:
         print(f"エラーが発生しました: {e}", file=sys.stderr)
         sys.exit(1)
-
-
-

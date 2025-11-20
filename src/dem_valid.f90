@@ -19,6 +19,8 @@ module simulation_parameters_mod
     real(8) :: time_step                      ! dt: 時間刻み
     real(8) :: friction_coeff_particle        ! fri: 粒子間摩擦係数
     real(8) :: friction_coeff_wall            ! frw: 壁-粒子間摩擦係数
+    real(8) :: rolling_friction_coeff_particle ! 粒子間転がり摩擦係数
+    real(8) :: rolling_friction_coeff_wall     ! 壁-粒子間転がり摩擦係数
     real(8) :: young_modulus_particle         ! e: 粒子のヤング率
     real(8) :: young_modulus_wall             ! ew: 壁のヤング率
     real(8) :: poisson_ratio_particle         ! po: 粒子のポアソン比
@@ -423,6 +425,8 @@ contains
         time_step = 5.0d-7
         friction_coeff_particle = 0.25d0
         friction_coeff_wall = 0.17d0
+        rolling_friction_coeff_particle = 0.0d0
+        rolling_friction_coeff_wall = 0.0d0
         young_modulus_particle = 4.9d9
         young_modulus_wall = 3.9d9
         poisson_ratio_particle = 0.23d0
@@ -461,6 +465,10 @@ contains
                     friction_coeff_particle = value
                 case ('FRICTION_COEFF_WALL')
                     friction_coeff_wall = value
+                case ('ROLLING_FRICTION_COEFF_PARTICLE')
+                    rolling_friction_coeff_particle = value
+                case ('ROLLING_FRICTION_COEFF_WALL')
+                    rolling_friction_coeff_wall = value
                 case ('YOUNG_MODULUS_PARTICLE')
                     young_modulus_particle = value
                 case ('YOUNG_MODULUS_WALL')
@@ -1383,6 +1391,11 @@ contains
         real(8) :: s1, s2, denom, A_c, B_c
         real(8) :: vx_rel_current, vz_rel_current, v_rel_n_current, v_rel_theory
 
+        ! 転がり摩擦用変数
+        real(8) :: friction_rolling_current
+        real(8) :: rolling_moment
+        real(8) :: omega_rel
+
         ri_val = radius(p_i)
         x_disp_incr_pi = x_disp_incr(p_i)
         z_disp_incr_pi = z_disp_incr(p_i)
@@ -1538,6 +1551,35 @@ contains
             ! end if
         end if
         
+        ! -------------------------------------------------------------------
+        ! 転がり摩擦抵抗の適用
+        ! -------------------------------------------------------------------
+        if (p_j <= num_particles) then
+            friction_rolling_current = rolling_friction_coeff_particle
+        else
+            friction_rolling_current = rolling_friction_coeff_wall
+        end if
+
+        if (friction_rolling_current > 0.0d0 .and. abs(total_normal_force) > 0.0d0) then
+            if (p_j <= num_particles) then
+                omega_rel = rotation_vel(p_i) - rotation_vel(p_j)
+            else
+                omega_rel = rotation_vel(p_i)
+            end if
+            
+            if (abs(omega_rel) > 1.0d-10) then
+                rolling_moment = - friction_rolling_current * r_eff * abs(total_normal_force) * sign(1.0d0, omega_rel)
+                
+                !$omp atomic
+                moment_sum(p_i) = moment_sum(p_i) + rolling_moment
+                
+                if (p_j <= num_particles) then
+                    !$omp atomic
+                    moment_sum(p_j) = moment_sum(p_j) - rolling_moment ! 作用反作用
+                end if
+            end if
+        end if
+
         ! 現在のオーバーラップを記録（次ステップで接触開始検出に使用）
         previous_overlap(p_i, contact_slot_idx_for_pi) = initial_overlap
     end subroutine actf_sub
