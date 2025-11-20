@@ -29,6 +29,7 @@ module simulation_parameters_mod
     real(8) :: particle_density               ! de: 粒子の密度
     real(8) :: reference_overlap            ! 参照食い込み量 δ_ref（平均半径の5%）
     logical :: stop_when_static             ! 静止検出時に計算を停止するか（1=停止, 0=続行）
+    real(8) :: kinetic_energy_threshold     ! 運動エネルギー閾値 [J]（静止判定用）
 
     ! 粒子生成パラメータ
     real(8) :: particle_radius_large          ! r1: 大きな粒子の半径
@@ -401,17 +402,6 @@ contains
             input_filename = "inputs/input_valid.dat"
         end if
         
-        ! 出力ディレクトリの決定（第2引数）
-        if (command_argument_count() >= 2) then
-            call get_command_argument(2, output_dir)
-        else
-            output_dir = "data"
-        end if
-
-        ! 出力ディレクトリの作成
-        call execute_command_line('mkdir -p ' // trim(output_dir), wait=.true.)
-        write(*,*) '出力ディレクトリ: ', trim(output_dir)
-        
         write(*,*) 'inputファイルを読み込み中: ', trim(input_filename)
         
         unit_num = 20
@@ -440,6 +430,7 @@ contains
         random_seed = 584287
         disable_cell_algorithm = .false.
         stop_when_static = .true.
+        kinetic_energy_threshold = 1.0d-6
         cell_size_override = 0.0d0
         output_interval = 50000
         max_calculation_steps = 2000000
@@ -495,6 +486,8 @@ contains
                     disable_cell_algorithm = (int(value) == 1)
                 case ('STOP_WHEN_STATIC')
                     stop_when_static = (int(value) == 1)
+                case ('KINETIC_ENERGY_THRESHOLD')
+                    kinetic_energy_threshold = value
                 case ('CELL_SIZE_OVERRIDE')
                     cell_size_override = value
                 case ('MAX_CALCULATION_STEPS')
@@ -689,7 +682,7 @@ contains
             
             ! z座標範囲を0.3〜0.6に制限するために層数を調整
             z_min_target = 0.3d0
-            z_max_target = 0.6d0
+            z_max_target = 0.35d0
             z_range = z_max_target - z_min_target
             layer_height = 2.0d0 * rn_val
             max_layers_for_range = idint(z_range / layer_height)
@@ -932,21 +925,21 @@ contains
         first_sloped_slot = 14
     
         ! 左壁 (contact_partner_idx = num_particles + 1)
-        wall_contact_slot_idx = 11 ! 元のコードでの左壁用の固定スロット
-        wall_partner_id = num_particles + 1
-        if (xi < ri_particle) then  ! 左壁と接触
-            en_coeff = 0.5d0
-            et_coeff = 0.5d0
-            wall_angle_sin = 0.0d0  ! 法線ベクトル成分 sin(alpha_ij) (粒子中心から壁中心へ向かうベクトル)
-            wall_angle_cos = -1.0d0 ! 法線ベクトル成分 cos(alpha_ij)
-            overlap_gap = ri_particle - xi ! 元のコードでは dabs(xi)、ここでは重なり量を正とする
-            contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
-            call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
-        else                        ! 接触なし
-            normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
-            shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
-            contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
-        end if
+        ! wall_contact_slot_idx = 11 ! 元のコードでの左壁用の固定スロット
+        ! wall_partner_id = num_particles + 1
+        ! if (xi < ri_particle) then  ! 左壁と接触
+        !     en_coeff = 0.5d0
+        !     et_coeff = 0.5d0
+        !     wall_angle_sin = 0.0d0  ! 法線ベクトル成分 sin(alpha_ij) (粒子中心から壁中心へ向かうベクトル)
+        !     wall_angle_cos = -1.0d0 ! 法線ベクトル成分 cos(alpha_ij)
+        !     overlap_gap = ri_particle - xi ! 元のコードでは dabs(xi)、ここでは重なり量を正とする
+        !     contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
+        !     call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
+        ! else                        ! 接触なし
+        !     normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
+        !     shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
+        !     contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
+        ! end if
     
         ! 下壁 (contact_partner_idx = num_particles + 2)
         wall_contact_slot_idx = 12 ! 元のコードでの下壁用の固定スロット
@@ -966,21 +959,21 @@ contains
         end if
     
         ! 右壁 (contact_partner_idx = num_particles + 3)
-        wall_contact_slot_idx = 13 ! 元のコードでの右壁用の固定スロット
-        wall_partner_id = num_particles + 3
-        if (xi + ri_particle > container_width) then ! 右壁と接触
-            en_coeff = 0.5d0
-            et_coeff = 0.5d0
-            wall_angle_sin = 0.0d0
-            wall_angle_cos = 1.0d0
-            overlap_gap = (xi + ri_particle) - container_width 
-            contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
-            call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
-        else                                        ! 接触なし
-            normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
-            shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
-            contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
-        end if
+        ! wall_contact_slot_idx = 13 ! 元のコードでの右壁用の固定スロット
+        ! wall_partner_id = num_particles + 3
+        ! if (xi + ri_particle > container_width) then ! 右壁と接触
+        !     en_coeff = 0.5d0
+        !     et_coeff = 0.5d0
+        !     wall_angle_sin = 0.0d0
+        !     wall_angle_cos = 1.0d0
+        !     overlap_gap = (xi + ri_particle) - container_width 
+        !     contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
+        !     call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
+        ! else                                        ! 接触なし
+        !     normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
+        !     shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
+        !     contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
+        ! end if
     
         ! 上壁 (contact_partner_idx = num_particles + 4)
         ! container_height > 0の場合のみ上壁を有効化
@@ -1295,6 +1288,7 @@ contains
         integer :: i
         real(8) :: sum_abs_disp, avg_abs_disp
         real(8) :: grav, dt
+        real(8) :: total_kinetic_energy, ke_trans, ke_rot
         
         dt = time_step
         grav = GRAVITY_ACCEL
@@ -1328,10 +1322,30 @@ contains
             end do
             !$omp end parallel do
             
-            ! 静止判定
+            ! 静止判定（運動エネルギーベース）
             if (num_particles > 0) then
-                avg_abs_disp = sum_abs_disp / real(num_particles, 8) / 2.0d0
-                if (avg_abs_disp < (time_step * time_step * GRAVITY_ACCEL * 1.0d-1)) then
+                total_kinetic_energy = 0.0d0
+                !$omp parallel do private(i, ke_trans, ke_rot) reduction(+:total_kinetic_energy)
+                do i = 1, num_particles
+                    ! 並進運動エネルギー: KE_trans = 0.5 * m * (vx² + vz²)
+                    if (mass(i) > 1.0d-20) then
+                        ke_trans = 0.5d0 * mass(i) * (x_vel(i)**2 + z_vel(i)**2)
+                    else
+                        ke_trans = 0.0d0
+                    end if
+                    
+                    ! 回転運動エネルギー: KE_rot = 0.5 * I * ω²
+                    if (moment_inertia(i) > 1.0d-20) then
+                        ke_rot = 0.5d0 * moment_inertia(i) * rotation_vel(i)**2
+                    else
+                        ke_rot = 0.0d0
+                    end if
+                    
+                    total_kinetic_energy = total_kinetic_energy + ke_trans + ke_rot
+                end do
+                !$omp end parallel do
+                
+                if (total_kinetic_energy < kinetic_energy_threshold) then
                     judge_static = 1
                 else
                     judge_static = 0
@@ -1390,11 +1404,6 @@ contains
         real(8) :: tau, alpha, wd, delta_theory
         real(8) :: s1, s2, denom, A_c, B_c
         real(8) :: vx_rel_current, vz_rel_current, v_rel_n_current, v_rel_theory
-
-        ! 転がり摩擦用変数
-        real(8) :: friction_rolling_current
-        real(8) :: rolling_moment
-        real(8) :: omega_rel
 
         ri_val = radius(p_i)
         x_disp_incr_pi = x_disp_incr(p_i)
@@ -1551,35 +1560,6 @@ contains
             ! end if
         end if
         
-        ! -------------------------------------------------------------------
-        ! 転がり摩擦抵抗の適用
-        ! -------------------------------------------------------------------
-        if (p_j <= num_particles) then
-            friction_rolling_current = rolling_friction_coeff_particle
-        else
-            friction_rolling_current = rolling_friction_coeff_wall
-        end if
-
-        if (friction_rolling_current > 0.0d0 .and. abs(total_normal_force) > 0.0d0) then
-            if (p_j <= num_particles) then
-                omega_rel = rotation_vel(p_i) - rotation_vel(p_j)
-            else
-                omega_rel = rotation_vel(p_i)
-            end if
-            
-            if (abs(omega_rel) > 1.0d-10) then
-                rolling_moment = - friction_rolling_current * r_eff * abs(total_normal_force) * sign(1.0d0, omega_rel)
-                
-                !$omp atomic
-                moment_sum(p_i) = moment_sum(p_i) + rolling_moment
-                
-                if (p_j <= num_particles) then
-                    !$omp atomic
-                    moment_sum(p_j) = moment_sum(p_j) - rolling_moment ! 作用反作用
-                end if
-            end if
-        end if
-
         ! 現在のオーバーラップを記録（次ステップで接触開始検出に使用）
         previous_overlap(p_i, contact_slot_idx_for_pi) = initial_overlap
     end subroutine actf_sub
@@ -1587,7 +1567,7 @@ contains
     !> グラフィック用データを出力するサブルーチン
     subroutine gfout_sub(iter_step, time_val, rmax_val)
         use simulation_constants_mod, only: nj_max, GRAVITY_ACCEL
-        use simulation_parameters_mod, only: container_width, container_height, time_step, output_dir
+        use simulation_parameters_mod, only: container_width, container_height, time_step
         use particle_data_mod
         use cell_system_mod, only: num_particles
         implicit none
@@ -1598,14 +1578,11 @@ contains
         real(8), allocatable :: vx_out(:), vz_out(:), rotation_vel_out(:)
 
         if (iter_step == 1) then
-            open(unit=10, file=trim(output_dir)//'/particles.csv', status='replace', action='write')
-            open(unit=11, file=trim(output_dir)//'/contacts.csv', status='replace', action='write')
-            
-            ! ヘッダー行
-            write(10, '(A)') 'step,time,id,x,z,radius,vx,vz,omega,angle,mass,charge'
-            write(11, '(A)') 'step,time,p1_id,p2_id,normal_force,shear_force'
+            open(unit=10, file='data/graph11.d', status='replace', action='write')
+            open(unit=11, file='data/graph21.d', status='replace', action='write')
         end if
 
+        write(10,*) num_particles, time_val, container_width, container_height, rmax_val
         if (num_particles > 0) then
             ! 出力用補正速度の準備（蛙飛び法のみ 0.5*dt*加速度で補正）
             dt = time_step
@@ -1617,29 +1594,23 @@ contains
                 vx_out(i) = x_vel(i) - 0.5d0 * dt * (x_force_sum(i) / mass(i))
                 vz_out(i) = z_vel(i) - 0.5d0 * dt * (z_force_sum(i) / mass(i) - grav)
                 rotation_vel_out(i) = rotation_vel(i) - 0.5d0 * dt * (moment_sum(i) / moment_inertia(i))
-                
-                ! CSV形式で出力 (カンマ区切り)
-                write(10, '(I0,A,ES14.7,A,I0,A,ES14.7,A,ES14.7,A,ES14.7,A,ES14.7,A,ES14.7,A,ES14.7,A,ES14.7,A,ES14.7,A,ES14.7)') &
-                    iter_step, ',', time_val, ',', i, ',', &
-                    x_coord(i), ',', z_coord(i), ',', radius(i), ',', &
-                    vx_out(i), ',', vz_out(i), ',', rotation_vel_out(i), ',', &
-                    rotation_angle(i), ',', mass(i), ',', charge(i)
             end do
-            
-            ! 接触データの出力
-            do i = 1, num_particles
-                do j = 1, nj_max
-                    if (contact_partner_idx(i, j) > i) then
-                        write(11, '(I0,A,ES14.7,A,I0,A,I0,A,ES14.7,A,ES14.7)') &
-                            iter_step, ',', time_val, ',', i, ',', contact_partner_idx(i, j), ',', &
-                            normal_force_contact(i, j), ',', shear_force_contact(i, j)
-                    end if
-                end do
-            end do
-            
-            deallocate(vx_out, vz_out, rotation_vel_out)
+
+            write(10,'(1000(ES12.5,1X,ES12.5,1X,ES12.5,2X))') (sngl(x_coord(i)), sngl(z_coord(i)), sngl(radius(i)), i=1,num_particles)
+            write(10,'(1000(ES12.5,1X,ES12.5,1X,ES12.5,2X))') (sngl(vx_out(i)), sngl(vz_out(i)), sngl(rotation_vel_out(i)), i=1,num_particles)
+            write(10,'(1000(ES12.5,2X))') (sngl(rotation_angle(i)), i=1,num_particles)
         end if
         
+        ! 接触力の出力 (オプション、graph21.dより)
+        write(11,*) 'Time: ', time_val 
+        if (num_particles > 0) then
+            do i = 1, num_particles
+                 write(11,'(A,I5,A,I5)') 'Particle: ', i, ' NumContacts: ', count(contact_partner_idx(i,1:nj_max) > 0)
+                 write(11,'(2X,A,13(ES10.3,1X))') 'ShearF: ', (shear_force_contact(i,j), j=1,nj_max)
+                 write(11,'(2X,A,13(ES10.3,1X))') 'NormalF:', (normal_force_contact(i,j), j=1,nj_max)
+                 write(11,'(2X,A,13(I5,2X))')    'Partner:', (contact_partner_idx(i,j), j=1,nj_max)
+            end do
+        end if
     end subroutine gfout_sub
 
     !> バックアップデータを出力するサブルーチン
@@ -1659,7 +1630,7 @@ contains
            rmax_dummy_val = 0.0d0
         end if
 
-        open(unit=13, file=trim(output_dir)//'/backl.d', status='replace', action='write')
+        open(unit=13, file='data/backl.d', status='replace', action='write')
 
         write(13,*) num_particles, cells_x_dir, cells_z_dir, particle_gen_layers
         write(13,*) rmax_dummy_val, 0.0d0, container_width, container_height, cell_size, time_step ! current_timeではなく初期t=0を保存すると仮定

@@ -2,8 +2,8 @@
 # コマンドライン引数を指定しない場合に使用されます
 
 # === シミュレーション制御パラメータ ===
-TIME_STEP                   5.0e-7      # 時間刻み [s]
-MAX_CALCULATION_STEPS       10000000     # 最大計算ステップ数
+TIME_STEP                   1.0e-7      # 時間刻み [s]
+MAX_CALCULATION_STEPS       100000000     # 最大計算ステップ数
 
 # === 材料物性値 ===
 YOUNG_MODULUS_PARTICLE      4.9e9       # 粒子のヤング率 [Pa]
@@ -19,9 +19,9 @@ ROLLING_FRICTION_COEFF_PARTICLE    0.0  # 粒子間転がり摩擦係数 [-]
 ROLLING_FRICTION_COEFF_WALL        0.0  # 粒子-壁間転がり摩擦係数 [-]
 
 # === 粒子生成パラメータ ===
-PARTICLE_RADIUS_LARGE       1.0e-3      # 大きな粒子の半径 [m] (1mmに固定)
-PARTICLE_RADIUS_SMALL       1.0e-3      # 小さな粒子の半径 [m] (1mmに固定)
-CONTAINER_WIDTH             0.5         # 容器の幅 [m]
+PARTICLE_RADIUS_LARGE       5.0e-3      # 大きな粒子の半径 [m] (5mmに固定)
+PARTICLE_RADIUS_SMALL       5.0e-3      # 小さな粒子の半径 [m] (5mmに固定)
+CONTAINER_WIDTH             1.5         # 容器の幅 [m]
 CONTAINER_HEIGHT            0.0         # 容器の高さ [m] (0.0=制限なし)
 PARTICLE_GEN_LAYERS         22          # 初期粒子生成層数 [-]
 RANDOM_SEED                 584287      # 乱数シード [-]
@@ -31,4 +31,5 @@ DISABLE_CELL_ALGORITHM      0           # セル法アルゴリズム (1=OFF, 0=
 STOP_WHEN_STATIC            1           # 静止検出時に停止 (1=ON, 0=OFF)
 
 # === 出力制御パラメータ ===
-OUTPUT_INTERVAL             50000       # 出力間隔 [ステップ]
+OUTPUT_INTERVAL             5000000       # 出力間隔 [ステップ]
+KINETIC_ENERGY_THRESHOLD    1.0d-12       # 運動エネルギーを用いた静止判定の閾値 [J]

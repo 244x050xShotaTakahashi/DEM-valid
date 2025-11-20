@@ -13,8 +13,8 @@ POISSON_RATIO_WALL          0.25        # 壁のポアソン比 [-]
 PARTICLE_DENSITY            2480.0      # 粒子の密度 [kg/m³]
 
 # === 摩擦係数 (実験パラメータ) ===
-FRICTION_COEFF_PARTICLE     0.5         # 粒子間摩擦係数 [-]
-FRICTION_COEFF_WALL         0.5         # 壁-粒子間摩擦係数 [-]
+FRICTION_COEFF_PARTICLE     0.0         # 粒子間摩擦係数 [-]
+FRICTION_COEFF_WALL         0.0         # 壁-粒子間摩擦係数 [-]
 
 # === 粒子生成パラメータ ===
 PARTICLE_RADIUS_LARGE       5.0e-3      # 大きな粒子の半径 [m]
@@ -31,6 +31,8 @@ STOP_WHEN_STATIC            1           # 静止検出時に停止 (1=ON, 0=OFF)
 # === 出力制御パラメータ ===
 OUTPUT_INTERVAL      100000      # 通常モード出力間隔 [ステップ]
 KINETIC_ENERGY_THRESHOLD    1.0d-12       # 運動エネルギーを用いた静止判定の閾値 [J]
+
+
 
 
 

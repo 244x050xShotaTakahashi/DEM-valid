@@ -11,7 +11,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Circle
 
 # 入力ファイルのデフォルトを変更 (CSV)
-DATA_FILE_DEFAULT = Path(__file__).resolve().parent.parent / "results" / "normal" / "particles.csv"
+DATA_FILE_DEFAULT = Path(__file__).resolve().parent.parent / "results" / "input_AoR" / "particles.csv"
 WALLS_FILE_DEFAULT = Path(__file__).resolve().parent.parent / "inputs" / "walls.dat"
 
 def read_walls_data(filename: Union[str, Path] = WALLS_FILE_DEFAULT):
