@@ -9,18 +9,20 @@ DEMシミュレーションの出力データから粒子堆積物の安息角�
 
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
 from pathlib import Path
 from typing import Union, Tuple, List, Dict, Optional
 import sys
 from scipy.stats import linregress
 
 
-def read_final_frame(filename: Union[str, Path] = "data/graph11.d") -> Dict:
+def read_particle_data(filename: Union[str, Path] = "data/graph11.d", container_width: Optional[float] = None) -> Dict:
     """
-    graph11.dファイルから最終フレームの粒子データを読み込む
+    粒子データを読み込む (graph11.d または CSV)
     
     Args:
         filename: 入力ファイルパス
+        container_width: 容器の幅 (CSVの場合に必要、指定がない場合は0.5またはデータから推定)
         
     Returns:
         粒子データを含む辞書 (x, z, r, num_particles, container_width)
@@ -30,75 +32,152 @@ def read_final_frame(filename: Union[str, Path] = "data/graph11.d") -> Dict:
     if not filename.exists():
         raise FileNotFoundError(f"データファイルが見つかりません: {filename}")
     
-    last_frame = None
-    
-    with open(filename, "r") as f:
-        tokens = []
+    if filename.suffix == '.csv':
+        return read_csv_data(filename, container_width)
+    else:
+        return read_graph11_data(filename)
+
+
+def read_csv_data(filename: Path, container_width: Optional[float] = None) -> Dict:
+    """
+    CSVファイルから最終フレームの粒子データを読み込む
+    """
+    try:
+        # pandasで読み込み (ヘッダーの空白除去も考慮)
+        df = pd.read_csv(filename, skipinitialspace=True)
         
-        def read_floats(n):
-            """n個の浮動小数点数を読み込む"""
-            result = []
-            while len(result) < n:
-                if not tokens:
-                    line = f.readline()
-                    if not line:
-                        raise EOFError("データが不完全です")
-                    tokens.extend(line.split())
-                
-                result.append(float(tokens.pop(0)))
-            return result
+        # 必要なカラムの確認
+        required_cols = ['step', 'time', 'x', 'z', 'radius']
+        if not all(col in df.columns for col in required_cols):
+             raise ValueError(f"CSVファイルに必要なカラムが含まれていません: {required_cols}")
+
+        # 最終ステップのデータを取得
+        last_step = df['step'].max()
+        last_frame_df = df[df['step'] == last_step]
         
-        while True:
-            try:
-                # ヘッダー: num_particles, time, container_width, container_height, rmax
-                header = read_floats(5)
-                num_particles = int(header[0])
-                time_val = header[1]
-                container_width = header[2]
-                container_height = header[3]
-                rmax_val = header[4]
-                
-                if num_particles < 0:
-                    continue
-                
-                # 粒子データ (x, z, r) × num_particles
-                particles_data_to_read = num_particles * 3
-                particle_values = []
-                if num_particles > 0:
-                    particle_values = read_floats(particles_data_to_read)
-                
-                # 速度データ (読み飛ばす)
-                velocity_values = []
-                if num_particles > 0:
-                    velocity_values = read_floats(particles_data_to_read)
-                
-                # 回転角度データ (読み飛ばす)
-                rotation_angles = []
-                if num_particles > 0:
-                    rotation_angles = read_floats(num_particles)
-                
-                # このフレームのデータを保存
-                x_coords = [particle_values[i * 3] for i in range(num_particles)]
-                z_coords = [particle_values[i * 3 + 1] for i in range(num_particles)]
-                radii = [particle_values[i * 3 + 2] for i in range(num_particles)]
-                
-                last_frame = {
-                    'x': np.array(x_coords),
-                    'z': np.array(z_coords),
-                    'r': np.array(radii),
-                    'num_particles': num_particles,
-                    'time': time_val,
-                    'container_width': container_width,
-                    'container_height': container_height
-                }
-                
-            except EOFError:
-                break
-    
-    if last_frame is None:
-        raise ValueError("有効なフレームデータが見つかりませんでした")
-    
-    return last_frame
+        num_particles = len(last_frame_df)
+        if num_particles == 0:
+            raise ValueError("有効な粒子データがありません")
+            
+        time_val = last_frame_df['time'].iloc[0]
+        
+        # データの抽出
+        x_coords = last_frame_df['x'].values
+        z_coords = last_frame_df['z'].values
+        radii = last_frame_df['radius'].values
+        
+        # コンテナ幅の決定
+        if container_width is None:
+            # x座標の最大値から推定 (マージンを少し考慮するか、単に最大値とするか)
+            # ここでは安全のためデフォルト0.5を採用しつつ警告を出すか、
+            # あるいは引数で指定させる設計にする。
+            # 既存コードとの互換性のため、一旦0.5とするが、最大値と比較してチェックする
+            max_x = np.max(x_coords) + np.max(radii)
+            est_width = 0.5
+            if max_x > 0.55: # 明らかに0.5より大きい場合
+                est_width = max_x
+                print(f"警告: コンテナ幅が指定されていないため、データから推定します: {est_width:.4f} m")
+            else:
+                print(f"警告: コンテナ幅が指定されていないため、デフォルト値を使用します: {est_width} m")
+            container_width = est_width
+            
+        return {
+            'x': x_coords,
+            'z': z_coords,
+            'r': radii,
+            'num_particles': num_particles,
+            'time': time_val,
+            'container_width': container_width,
+            'container_height': 0.0 # CSVには含まれていないため仮定
+        }
+        
+    except Exception as e:
+        raise ValueError(f"CSVファイルの読み込みに失敗しました: {e}")
+
+
+def read_graph11_data(filename: Path) -> Dict:
+    """
+    graph11.dファイルから最終フレームの粒子データを読み込む
+    フォーマット(推測):
+      NumParticles Time Width
+      Val1 Val2
+      x1 z1 r1 x2 z2 r2 ...
+      (追加データがある可能性あり)
+    """
+    try:
+        with open(filename, 'r') as f:
+            content = f.read()
+            
+        tokens = content.split()
+        if not tokens:
+            raise ValueError("ファイルが空です")
+            
+        # 粒子数はファイルの先頭にあると仮定
+        try:
+            num_particles_global = int(tokens[0])
+        except ValueError:
+            raise ValueError("粒子数を読み取れませんでした")
+
+        # スナップショットの開始位置（ヘッダー）を探索
+        # ヘッダー構造: [N, Time, Width, Val1, Val2] と仮定 (5トークン)
+        # データ構造: [x, z, r] * N
+        
+        header_size = 5
+        data_size = num_particles_global * 3
+        block_min_size = header_size + data_size
+        
+        candidates = []
+        i = 0
+        
+        while i < len(tokens):
+            if tokens[i] == str(num_particles_global):
+                # 残りトークン数のチェック
+                if i + block_min_size <= len(tokens):
+                    # 簡易チェック: TimeとWidthが数値か
+                    try:
+                        _ = float(tokens[i+1])
+                        _ = float(tokens[i+2])
+                        candidates.append(i)
+                        # 次のブロックへスキップ（重複検出を避けるためデータ分進める）
+                        i += block_min_size 
+                        continue 
+                    except ValueError:
+                        pass
+            i += 1
+            
+        if not candidates:
+            raise ValueError("有効なデータスナップショットが見つかりませんでした")
+            
+        # 最後のスナップショットを使用
+        last_idx = candidates[-1]
+        
+        time_val = float(tokens[last_idx+1])
+        container_width = float(tokens[last_idx+2])
+        
+        data_start = last_idx + header_size
+        data_end = data_start + data_size
+        
+        # データを抽出して数値変換
+        raw_data = [float(x) for x in tokens[data_start : data_end]]
+        data_arr = np.array(raw_data)
+        
+        x = data_arr[0::3]
+        z = data_arr[1::3]
+        r = data_arr[2::3]
+        
+        return {
+            'x': x,
+            'z': z,
+            'r': r,
+            'num_particles': num_particles_global,
+            'time': time_val,
+            'container_width': container_width,
+            'container_height': 0.0
+        }
+
+    except Exception as e:
+        print(f"エラー: graph11.dの解析に失敗しました: {e}", file=sys.stderr)
+        raise
 
 
 def detect_surface_particles(x: np.ndarray, z: np.ndarray, r: np.ndarray, 
@@ -287,7 +366,9 @@ def analyze_repose_angle(data_file: str = "data/graph11.d",
                         output_dir: str = "results",
                         case_name: str = "repose_angle",
                         x_range: Optional[Tuple[float, float]] = None,
-                        z_range: Optional[Tuple[float, float]] = None) -> Dict:
+                        z_range: Optional[Tuple[float, float]] = None,
+                        container_width: Optional[float] = None,
+                        margins: Tuple[float, float, float] = (0.1, 0.1, 0.1)) -> Dict:
     """
     安息角を測定してCSVに保存
     
@@ -297,13 +378,15 @@ def analyze_repose_angle(data_file: str = "data/graph11.d",
         case_name: ケース名
         x_range: x座標の範囲 (min, max)
         z_range: z座標の範囲 (min, max)
+        container_width: 容器の幅 (CSV入力時用)
+        margins: 解析除外マージン (left, right, center)
         
     Returns:
         測定結果を含む辞書
     """
     # データ読み込み
     print(f"データを読み込んでいます: {data_file}")
-    data = read_final_frame(data_file)
+    data = read_particle_data(data_file, container_width)
     print(f"粒子数: {data['num_particles']}, 時刻: {data['time']:.4f} s")
     
     # 表面粒子を検出
@@ -312,12 +395,24 @@ def analyze_repose_angle(data_file: str = "data/graph11.d",
     mask = np.ones(len(data['x']), dtype=bool)
     
     if x_range:
-        print(f"x座標範囲: {x_range[0]} <= x <= {x_range[1]}")
-        mask &= (data['x'] >= x_range[0]) & (data['x'] <= x_range[1])
+        x_min_str = x_range[0] if x_range[0] is not None else '-inf'
+        x_max_str = x_range[1] if x_range[1] is not None else 'inf'
+        print(f"x座標範囲: {x_min_str} <= x <= {x_max_str}")
+        
+        if x_range[0] is not None:
+            mask &= (data['x'] >= x_range[0])
+        if x_range[1] is not None:
+            mask &= (data['x'] <= x_range[1])
         
     if z_range:
-        print(f"z座標範囲: {z_range[0]} <= z <= {z_range[1]}")
-        mask &= (data['z'] >= z_range[0]) & (data['z'] <= z_range[1])
+        z_min_str = z_range[0] if z_range[0] is not None else '-inf'
+        z_max_str = z_range[1] if z_range[1] is not None else 'inf'
+        print(f"z座標範囲: {z_min_str} <= z <= {z_max_str}")
+        
+        if z_range[0] is not None:
+            mask &= (data['z'] >= z_range[0])
+        if z_range[1] is not None:
+            mask &= (data['z'] <= z_range[1])
 
     filtered_x = data['x'][mask]
     filtered_z = data['z'][mask]
@@ -325,15 +420,19 @@ def analyze_repose_angle(data_file: str = "data/graph11.d",
     
     print(f"解析対象粒子数: {len(filtered_x)} (全粒子数: {len(data['x'])})")
     
-    # 範囲指定がある場合はマージンを無効化（または調整）して呼び出す
-    # center_marginがあると中央が抜けてしまうため、範囲指定時は0にする
-    margin_val = 0.1
+    # マージン設定
+    left_m, right_m, center_m = margins
+    
+    # 範囲指定がある場合はマージンを強制的に0にする
     if x_range is not None:
-        margin_val = 0.0
+        print("x座標範囲が指定されているため、自動除外マージンを無効化します (0.0)")
+        left_m, right_m, center_m = 0.0, 0.0, 0.0
+    else:
+        print(f"解析除外マージン: Left={left_m}, Right={right_m}, Center={center_m}")
         
     left_surface, right_surface = detect_surface_particles(
         filtered_x, filtered_z, filtered_r, data['container_width'],
-        left_margin=margin_val, right_margin=margin_val, center_margin=margin_val
+        left_margin=left_m, right_margin=right_m, center_margin=center_m
     )
     
     left_x, left_z = left_surface
@@ -416,19 +515,27 @@ if __name__ == "__main__":
     parser.add_argument('--x-max', type=float, help='x座標の最大値')
     parser.add_argument('--z-min', type=float, help='z座標の最小値')
     parser.add_argument('--z-max', type=float, help='z座標の最大値')
+    parser.add_argument('--width', '-w', type=float, default=None,
+                       help='容器の幅 (CSV入力の場合に推奨、デフォルト: 0.5)')
+    parser.add_argument('--margin-center', type=float, default=0.1,
+                       help='中央の解析除外マージン比率 (デフォルト: 0.1)')
+    parser.add_argument('--margin-side', type=float, default=0.1,
+                       help='左右両端の解析除外マージン比率 (デフォルト: 0.1)')
 
     args = parser.parse_args()
     
     x_range = None
-    if args.x_min is not None and args.x_max is not None:
+    if args.x_min is not None or args.x_max is not None:
         x_range = (args.x_min, args.x_max)
         
     z_range = None
-    if args.z_min is not None and args.z_max is not None:
+    if args.z_min is not None or args.z_max is not None:
         z_range = (args.z_min, args.z_max)
     
+    margins = (args.margin_side, args.margin_side, args.margin_center)
+    
     try:
-        results = analyze_repose_angle(args.data, args.output, args.name, x_range, z_range)
+        results = analyze_repose_angle(args.data, args.output, args.name, x_range, z_range, args.width, margins)
         print("\n=== 測定完了 ===")
         print(f"平均安息角: {results['average_angle']:.2f}°")
     except Exception as e:

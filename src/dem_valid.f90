@@ -14,7 +14,7 @@ end module simulation_constants_mod
 module simulation_parameters_mod
     use simulation_constants_mod, only: ni_max
     implicit none
-
+    
     ! シミュレーション制御パラメータ
     real(8) :: time_step                      ! dt: 時間刻み
     real(8) :: friction_coeff_particle        ! fri: 粒子間摩擦係数
@@ -30,7 +30,8 @@ module simulation_parameters_mod
     real(8) :: reference_overlap            ! 参照食い込み量 δ_ref（平均半径の5%）
     logical :: stop_when_static             ! 静止検出時に計算を停止するか（1=停止, 0=続行）
     real(8) :: kinetic_energy_threshold     ! 運動エネルギー閾値 [J]（静止判定用）
-
+    integer :: min_steps_before_static_check ! 静止判定を有効にするまでに必要な最小ステップ数
+    
     ! 粒子生成パラメータ
     real(8) :: particle_radius_large          ! r1: 大きな粒子の半径
     real(8) :: particle_radius_small          ! r2: 小さな粒子の半径
@@ -56,7 +57,7 @@ module simulation_parameters_mod
     real(8) :: default_charge                 ! デフォルトの粒子電荷 [C]
     logical :: enable_coulomb_force           ! クーロン力の有効化フラグ
     character(len=256) :: output_dir          ! 出力ディレクトリパス
-
+    
     save
 end module simulation_parameters_mod
 
@@ -244,7 +245,8 @@ program two_dimensional_dem
 
         ! 静止状態の判定
         if (static_judge_flag == 1) then
-            if (stop_when_static) then
+            ! ある程度ステップを進めてから静止判定を有効にする
+            if (stop_when_static .and. it_step >= min_steps_before_static_check) then
                 write(*,*) '静止状態に到達しました。時刻: ', current_time
                 goto 200 ! シミュレーションループを抜ける
             end if
@@ -398,11 +400,20 @@ contains
             if (input_filename(1:1) /= '/' .and. input_filename(1:6) /= 'inputs') then
                 input_filename = 'inputs/' // trim(input_filename)
             end if
+
+            ! 第2引数がある場合は出力ディレクトリとして取得
+            if (command_argument_count() >= 2) then
+                call get_command_argument(2, output_dir)
+            else
+                output_dir = "data"
+            end if
         else
             input_filename = "inputs/input_valid.dat"
+            output_dir = "data"
         end if
         
         write(*,*) 'inputファイルを読み込み中: ', trim(input_filename)
+        write(*,*) '出力ディレクトリ: ', trim(output_dir)
         
         unit_num = 20
         open(unit=unit_num, file=input_filename, status='old', action='read', iostat=ios)
@@ -431,6 +442,7 @@ contains
         disable_cell_algorithm = .false.
         stop_when_static = .true.
         kinetic_energy_threshold = 1.0d-6
+        min_steps_before_static_check = 100000
         cell_size_override = 0.0d0
         output_interval = 50000
         max_calculation_steps = 2000000
@@ -492,6 +504,8 @@ contains
                     cell_size_override = value
                 case ('MAX_CALCULATION_STEPS')
                     max_calculation_steps = int(value)
+                case ('MIN_STEPS_BEFORE_STATIC_CHECK')
+                    min_steps_before_static_check = int(value)
                 case ('ENABLE_COULOMB_FORCE')
                     enable_coulomb_force = (int(value) == 1)
                 case ('COULOMB_CONSTANT')
@@ -682,7 +696,7 @@ contains
             
             ! z座標範囲を0.3〜0.6に制限するために層数を調整
             z_min_target = 0.3d0
-            z_max_target = 0.35d0
+            z_max_target = 0.4d0
             z_range = z_max_target - z_min_target
             layer_height = 2.0d0 * rn_val
             max_layers_for_range = idint(z_range / layer_height)
@@ -925,21 +939,21 @@ contains
         first_sloped_slot = 14
     
         ! 左壁 (contact_partner_idx = num_particles + 1)
-        ! wall_contact_slot_idx = 11 ! 元のコードでの左壁用の固定スロット
-        ! wall_partner_id = num_particles + 1
-        ! if (xi < ri_particle) then  ! 左壁と接触
-        !     en_coeff = 0.5d0
-        !     et_coeff = 0.5d0
-        !     wall_angle_sin = 0.0d0  ! 法線ベクトル成分 sin(alpha_ij) (粒子中心から壁中心へ向かうベクトル)
-        !     wall_angle_cos = -1.0d0 ! 法線ベクトル成分 cos(alpha_ij)
-        !     overlap_gap = ri_particle - xi ! 元のコードでは dabs(xi)、ここでは重なり量を正とする
-        !     contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
-        !     call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
-        ! else                        ! 接触なし
-        !     normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
-        !     shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
-        !     contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
-        ! end if
+        wall_contact_slot_idx = 11 ! 元のコードでの左壁用の固定スロット
+        wall_partner_id = num_particles + 1
+        if (xi < ri_particle) then  ! 左壁と接触
+            en_coeff = 0.5d0
+            et_coeff = 0.5d0
+            wall_angle_sin = 0.0d0  ! 法線ベクトル成分 sin(alpha_ij) (粒子中心から壁中心へ向かうベクトル)
+            wall_angle_cos = -1.0d0 ! 法線ベクトル成分 cos(alpha_ij)
+            overlap_gap = ri_particle - xi ! 元のコードでは dabs(xi)、ここでは重なり量を正とする
+            contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
+            call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
+        else                        ! 接触なし
+            normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
+            shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
+            contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
+        end if
     
         ! 下壁 (contact_partner_idx = num_particles + 2)
         wall_contact_slot_idx = 12 ! 元のコードでの下壁用の固定スロット
@@ -959,21 +973,21 @@ contains
         end if
     
         ! 右壁 (contact_partner_idx = num_particles + 3)
-        ! wall_contact_slot_idx = 13 ! 元のコードでの右壁用の固定スロット
-        ! wall_partner_id = num_particles + 3
-        ! if (xi + ri_particle > container_width) then ! 右壁と接触
-        !     en_coeff = 0.5d0
-        !     et_coeff = 0.5d0
-        !     wall_angle_sin = 0.0d0
-        !     wall_angle_cos = 1.0d0
-        !     overlap_gap = (xi + ri_particle) - container_width 
-        !     contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
-        !     call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
-        ! else                                        ! 接触なし
-        !     normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
-        !     shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
-        !     contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
-        ! end if
+        wall_contact_slot_idx = 13 ! 元のコードでの右壁用の固定スロット
+        wall_partner_id = num_particles + 3
+        if (xi + ri_particle > container_width) then ! 右壁と接触
+            en_coeff = 0.5d0
+            et_coeff = 0.5d0
+            wall_angle_sin = 0.0d0
+            wall_angle_cos = 1.0d0
+            overlap_gap = (xi + ri_particle) - container_width 
+            contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
+            call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
+        else                                        ! 接触なし
+            normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
+            shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
+            contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
+        end if
     
         ! 上壁 (contact_partner_idx = num_particles + 4)
         ! container_height > 0の場合のみ上壁を有効化
@@ -1257,17 +1271,17 @@ contains
                 fx = force_magnitude * dx
                 fz = force_magnitude * dz
                 
-                ! 粒子iに力を加算（粒子jへ向かう力）
+                ! 粒子iに力を加算（反発力なので i<-j 方向、つまり -dx 方向）
                 !$omp atomic
-                x_force_sum(i) = x_force_sum(i) + fx
+                x_force_sum(i) = x_force_sum(i) - fx
                 !$omp atomic
-                z_force_sum(i) = z_force_sum(i) + fz
+                z_force_sum(i) = z_force_sum(i) - fz
                 
-                ! 粒子jに反作用力を加算（粒子iへ向かう力）
+                ! 粒子jに反作用力を加算（反発力なので j->i 方向、つまり +dx 方向）
                 !$omp atomic
-                x_force_sum(j) = x_force_sum(j) - fx
+                x_force_sum(j) = x_force_sum(j) + fx
                 !$omp atomic
-                z_force_sum(j) = z_force_sum(j) - fz
+                z_force_sum(j) = z_force_sum(j) + fz
             end do
         end do
         !$omp end parallel do
@@ -1377,7 +1391,7 @@ contains
         ! initial_overlap: 幾何学的な重なり量、接触していれば正
         ! en_coeff, et_coeff: 反発係数 (normal, tangential)
         use simulation_constants_mod, only: ni_max
-        use simulation_parameters_mod, only: time_step, reference_overlap
+        use simulation_parameters_mod, only: time_step, reference_overlap, rolling_friction_coeff_particle, rolling_friction_coeff_wall
         use particle_data_mod
         use cell_system_mod, only: num_particles
         implicit none
@@ -1404,6 +1418,9 @@ contains
         real(8) :: tau, alpha, wd, delta_theory
         real(8) :: s1, s2, denom, A_c, B_c
         real(8) :: vx_rel_current, vz_rel_current, v_rel_n_current, v_rel_theory
+        ! 転がり摩擦関連
+        real(8) :: rolling_coeff_current, rel_angular_vel, rolling_torque_mag
+        real(8) :: rolling_torque_i, rolling_torque_j
 
         ri_val = radius(p_i)
         x_disp_incr_pi = x_disp_incr(p_i)
@@ -1537,6 +1554,45 @@ contains
         total_normal_force = normal_force_contact(p_i, contact_slot_idx_for_pi) + damping_force_normal 
         total_shear_force = shear_force_contact(p_i, contact_slot_idx_for_pi) + damping_force_shear
 
+        !---------------------------------------------------------------
+        ! 転がり摩擦によるモーメント（非球形粒子の近似）
+        !   |M_r| = μ_r * F_n * R_eff
+        !   向き  = - sign(ω_rel)   （相対角速度に逆らう向き）
+        !   - 粒子間:  μ_r = rolling_friction_coeff_particle
+        !   - 粒子-壁: μ_r = rolling_friction_coeff_wall
+        !---------------------------------------------------------------
+        rolling_coeff_current = 0.0d0
+        if (p_j <= num_particles) then
+            rolling_coeff_current = rolling_friction_coeff_particle
+        else
+            rolling_coeff_current = rolling_friction_coeff_wall
+        end if
+
+        if (rolling_coeff_current > 0.0d0 .and. total_normal_force > 0.0d0) then
+            if (p_j <= num_particles) then
+                ! 粒子間: 相対角速度
+                rel_angular_vel = rotation_vel(p_i) - rotation_vel(p_j)
+            else
+                ! 粒子-壁: 壁は回転しないと仮定
+                rel_angular_vel = rotation_vel(p_i)
+            end if
+
+            if (abs(rel_angular_vel) > 1.0d-12) then
+                rolling_torque_mag = rolling_coeff_current * total_normal_force * r_eff
+
+                ! 粒子p_iへの転がり抵抗モーメント
+                rolling_torque_i = -rolling_torque_mag * sign(1.0d0, rel_angular_vel)
+                moment_sum(p_i) = moment_sum(p_i) + rolling_torque_i
+
+                ! 相手が粒子の場合は反作用モーメントも付与
+                if (p_j <= num_particles) then
+                    rolling_torque_j = -rolling_torque_i
+                    !$omp atomic
+                    moment_sum(p_j) = moment_sum(p_j) + rolling_torque_j
+                end if
+            end if
+        end if
+
         ! 粒子p_iに力を適用 (式3.13)
         ! 法線力は中心を結ぶ線に沿って作用 (angle_cos, angle_sin で定義される iからjへの方向)
         ! せん断力はそれに垂直。
@@ -1567,7 +1623,7 @@ contains
     !> グラフィック用データを出力するサブルーチン
     subroutine gfout_sub(iter_step, time_val, rmax_val)
         use simulation_constants_mod, only: nj_max, GRAVITY_ACCEL
-        use simulation_parameters_mod, only: container_width, container_height, time_step
+        use simulation_parameters_mod, only: container_width, container_height, time_step, output_dir
         use particle_data_mod
         use cell_system_mod, only: num_particles
         implicit none
@@ -1576,10 +1632,14 @@ contains
         integer :: i,j
         real(8) :: dt, grav
         real(8), allocatable :: vx_out(:), vz_out(:), rotation_vel_out(:)
+        character(len=512) :: file_path
 
         if (iter_step == 1) then
-            open(unit=10, file='data/graph11.d', status='replace', action='write')
-            open(unit=11, file='data/graph21.d', status='replace', action='write')
+            file_path = trim(output_dir) // '/particles.csv'
+            open(unit=10, file=trim(file_path), status='replace', action='write')
+            
+            file_path = trim(output_dir) // '/contacts.csv'
+            open(unit=11, file=trim(file_path), status='replace', action='write')
         end if
 
         write(10,*) num_particles, time_val, container_width, container_height, rmax_val
@@ -1596,19 +1656,26 @@ contains
                 rotation_vel_out(i) = rotation_vel(i) - 0.5d0 * dt * (moment_sum(i) / moment_inertia(i))
             end do
 
-            write(10,'(1000(ES12.5,1X,ES12.5,1X,ES12.5,2X))') (sngl(x_coord(i)), sngl(z_coord(i)), sngl(radius(i)), i=1,num_particles)
-            write(10,'(1000(ES12.5,1X,ES12.5,1X,ES12.5,2X))') (sngl(vx_out(i)), sngl(vz_out(i)), sngl(rotation_vel_out(i)), i=1,num_particles)
-            write(10,'(1000(ES12.5,2X))') (sngl(rotation_angle(i)), i=1,num_particles)
+            ! CSV形式で出力 (x, z, r, vx, vz, v_rot, theta)
+            write(10,*) "x,z,radius,vx,vz,v_rot,theta"
+            do i = 1, num_particles
+                write(10,'(ES12.5,A,ES12.5,A,ES12.5,A,ES12.5,A,ES12.5,A,ES12.5,A,ES12.5)') &
+                    x_coord(i), ",", z_coord(i), ",", radius(i), ",", &
+                    vx_out(i), ",", vz_out(i), ",", rotation_vel_out(i), ",", &
+                    rotation_angle(i)
+            end do
         end if
         
         ! 接触力の出力 (オプション、graph21.dより)
         write(11,*) 'Time: ', time_val 
+        write(11,*) 'Particle_ID,NumContacts,ShearForces...,NormalForces...,Partners...'
         if (num_particles > 0) then
             do i = 1, num_particles
-                 write(11,'(A,I5,A,I5)') 'Particle: ', i, ' NumContacts: ', count(contact_partner_idx(i,1:nj_max) > 0)
-                 write(11,'(2X,A,13(ES10.3,1X))') 'ShearF: ', (shear_force_contact(i,j), j=1,nj_max)
-                 write(11,'(2X,A,13(ES10.3,1X))') 'NormalF:', (normal_force_contact(i,j), j=1,nj_max)
-                 write(11,'(2X,A,13(I5,2X))')    'Partner:', (contact_partner_idx(i,j), j=1,nj_max)
+                 write(11,'(I5,A,I5,A,40(ES10.3,A),40(ES10.3,A),40(I5,A))') &
+                     i, ",", count(contact_partner_idx(i,1:nj_max) > 0), ",", &
+                     (shear_force_contact(i,j), ",", j=1,nj_max), &
+                     (normal_force_contact(i,j), ",", j=1,nj_max), &
+                     (contact_partner_idx(i,j), ",", j=1,nj_max)
             end do
         end if
     end subroutine gfout_sub
@@ -1623,6 +1690,7 @@ contains
         integer :: i, j
         real(8) :: rmax_dummy_val ! 元のbfoutはrmaxを必要とするが、メインの呼び出しからは渡されない。
                                   ! リストアに不可欠でないか、粒子半径から取得すると仮定。
+        character(len=512) :: file_path
         
         if (num_particles > 0) then
            rmax_dummy_val = maxval(radius(1:num_particles))
@@ -1630,7 +1698,8 @@ contains
            rmax_dummy_val = 0.0d0
         end if
 
-        open(unit=13, file='data/backl.d', status='replace', action='write')
+        file_path = trim(output_dir) // '/backl.d'
+        open(unit=13, file=trim(file_path), status='replace', action='write')
 
         write(13,*) num_particles, cells_x_dir, cells_z_dir, particle_gen_layers
         write(13,*) rmax_dummy_val, 0.0d0, container_width, container_height, cell_size, time_step ! current_timeではなく初期t=0を保存すると仮定
