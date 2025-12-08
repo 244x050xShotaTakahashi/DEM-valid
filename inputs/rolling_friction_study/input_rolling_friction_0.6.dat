@@ -15,8 +15,8 @@ PARTICLE_DENSITY            2480.0      # 粒子の密度 [kg/m³]
 # === 摩擦係数 ===
 FRICTION_COEFF_PARTICLE     0.25        # 粒子間摩擦係数 [-]
 FRICTION_COEFF_WALL         0.17        # 壁-粒子間摩擦係数 [-]
-ROLLING_FRICTION_COEFF_PARTICLE    0.2 # 粒子間転がり摩擦係数 [-]
-ROLLING_FRICTION_COEFF_WALL        0.2 # 粒子-壁間転がり摩擦係数 [-]
+ROLLING_FRICTION_COEFF_PARTICLE    0.6 # 粒子間転がり摩擦係数 [-]
+ROLLING_FRICTION_COEFF_WALL        0.6 # 粒子-壁間転がり摩擦係数 [-]
 
 # === 粒子生成パラメータ ===
 # RADIUS_DISTRIBUTION_TYPE    file
