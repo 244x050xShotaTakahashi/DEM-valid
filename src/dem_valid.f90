@@ -57,6 +57,36 @@ module simulation_parameters_mod
     real(8) :: default_charge                 ! デフォルトの粒子電荷 [C]
     logical :: enable_coulomb_force           ! クーロン力の有効化フラグ
     character(len=256) :: output_dir          ! 出力ディレクトリパス
+    logical :: enable_profiling = .true.      ! プロファイル機能の有効化
+    integer :: profiling_sample_interval = 0  ! サンプリング計測間隔 (0=サンプリングなし、N=Nステップごとに有効化)
+    
+    ! 半径分布設定
+    character(len=32) :: radius_distribution_type = 'fixed'  ! 'fixed', 'file', 'uniform', 'normal'
+    character(len=256) :: radius_list_file = ''              ! 半径リストファイルパス
+    real(8) :: radius_uniform_min = 0.005d0                  ! 一様分布の最小値 [m]
+    real(8) :: radius_uniform_max = 0.010d0                  ! 一様分布の最大値 [m]
+    real(8) :: radius_normal_mean = 0.0075d0                 ! 正規分布の平均値 [m]
+    real(8) :: radius_normal_std = 0.001d0                   ! 正規分布の標準偏差 [m]
+    
+    ! 電荷分布設定
+    character(len=32) :: charge_distribution_type = 'fixed'  ! 'fixed', 'file', 'uniform', 'normal'
+    character(len=256) :: charge_list_file = ''              ! 電荷リストファイルパス
+    real(8) :: charge_uniform_min = 0.0d0                    ! 一様分布の最小値 [C]
+    real(8) :: charge_uniform_max = 1.0d-9                   ! 一様分布の最大値 [C]
+    real(8) :: charge_normal_mean = 1.0d-9                   ! 正規分布の平均値 [C]
+    real(8) :: charge_normal_std = 0.2d-9                    ! 正規分布の標準偏差 [C]
+    
+    ! 壁引き抜きパラメータ
+    logical :: enable_wall_withdraw = .false.                ! 壁引き抜きの有効化
+    integer :: wall_withdraw_step = 0                        ! 引き抜き開始ステップ
+    integer :: withdraw_wall_id = 0                          ! 引き抜く壁 (1=左,2=下,3=右,4=上, 0=無効)
+    integer :: withdraw_sloped_wall_id = 0                   ! 引き抜く斜面壁ID (walls.datの壁番号, 0=無効)
+    logical :: left_wall_active = .true.                     ! 左壁アクティブ状態
+    logical :: bottom_wall_active = .true.                   ! 下壁アクティブ状態
+    logical :: right_wall_active = .true.                    ! 右壁アクティブ状態
+    logical :: top_wall_active = .true.                      ! 上壁アクティブ状態
+    logical :: wall_withdraw_done = .false.                  ! 壁引き抜き実行済みフラグ
+    logical :: filled_particles_saved = .false.              ! 充填状態保存済みフラグ
     
     save
 end module simulation_parameters_mod
@@ -138,13 +168,243 @@ module wall_data_mod
     real(8), dimension(nw_max) :: wall_tangent_z
     real(8), dimension(nw_max) :: wall_normal_x
     real(8), dimension(nw_max) :: wall_normal_z
+    logical, dimension(nw_max) :: wall_active = .true.     ! 壁のアクティブ状態
     character(len=256) :: walls_file = 'inputs/walls.dat'
     logical :: walls_file_exists = .false.
     save
 end module wall_data_mod
 
+! モジュール: プロファイリングユーティリティ
+module profiling_mod
+    use iso_fortran_env, only: int64
+    implicit none
+    integer, parameter :: max_profile_entries = 512
+    integer, parameter :: profiler_tick_kind = int64
+
+    type profile_entry_t
+        character(len=64) :: name = ''
+        integer(int64) :: total_ticks = 0_int64
+        integer(int64) :: max_ticks = 0_int64
+        integer :: call_count = 0
+    end type profile_entry_t
+
+    type(profile_entry_t), dimension(max_profile_entries) :: profile_entries
+    integer :: profile_entry_count = 0
+    integer :: profile_clock_rate = 1
+    logical :: profiling_enabled = .false.
+
+contains
+
+    subroutine profiler_init(enable_flag)
+        logical, intent(in), optional :: enable_flag
+        integer :: i
+
+        profiling_enabled = .true.
+        if (present(enable_flag)) profiling_enabled = enable_flag
+
+        call system_clock(count_rate=profile_clock_rate)
+        if (profile_clock_rate <= 0) profile_clock_rate = 1
+
+        profile_entry_count = 0
+        do i = 1, max_profile_entries
+            profile_entries(i)%name = ''
+            profile_entries(i)%total_ticks = 0_int64
+            profile_entries(i)%max_ticks = 0_int64
+            profile_entries(i)%call_count = 0
+        end do
+    end subroutine profiler_init
+
+    subroutine profiler_time_now(ticks_out)
+        integer(int64), intent(out) :: ticks_out
+        call system_clock(count=ticks_out)
+    end subroutine profiler_time_now
+
+    subroutine profiler_set_enabled(flag)
+        logical, intent(in) :: flag
+        integer :: i
+
+        profiling_enabled = flag
+        if (.not. profiling_enabled) then
+            profile_entry_count = 0
+            do i = 1, max_profile_entries
+                profile_entries(i)%name = ''
+                profile_entries(i)%total_ticks = 0_int64
+                profile_entries(i)%max_ticks = 0_int64
+                profile_entries(i)%call_count = 0
+            end do
+        end if
+    end subroutine profiler_set_enabled
+
+    subroutine profiler_touch(name)
+        character(len=*), intent(in) :: name
+        integer :: idx
+        character(len=64) :: key
+        integer :: i
+
+        if (.not. profiling_enabled) return
+
+        key = adjustl(name)
+        key = trim(key)
+
+        !$omp critical(prof_registry)
+        idx = 0
+        do i = 1, profile_entry_count
+            if (trim(profile_entries(i)%name) == key) then
+                idx = i
+                exit
+            end if
+        end do
+
+        if (idx == 0) then
+            if (profile_entry_count < max_profile_entries) then
+                profile_entry_count = profile_entry_count + 1
+                profile_entries(profile_entry_count)%name = key
+            end if
+        end if
+        !$omp end critical(prof_registry)
+    end subroutine profiler_touch
+
+    subroutine profiler_start(name, token)
+        character(len=*), intent(in) :: name
+        integer(int64), intent(out) :: token
+
+        if (.not. profiling_enabled) then
+            token = 0_int64
+            return
+        end if
+        if (.false.) call profiler_touch(name)
+        call profiler_time_now(token)
+    end subroutine profiler_start
+
+    subroutine profiler_stop(name, token)
+        character(len=*), intent(in) :: name
+        integer(int64), intent(in) :: token
+        integer(int64) :: now_ticks, elapsed
+
+        if (.not. profiling_enabled) return
+
+        call profiler_time_now(now_ticks)
+        elapsed = now_ticks - token
+        if (elapsed < 0_int64) return
+        call profiler_add(name, elapsed)
+    end subroutine profiler_stop
+
+    subroutine profiler_add(name, elapsed_ticks)
+        character(len=*), intent(in) :: name
+        integer(int64), intent(in) :: elapsed_ticks
+        integer :: idx
+        character(len=64) :: key
+        integer :: i
+        logical :: skip_update
+        
+        if (.not. profiling_enabled) return
+        if (elapsed_ticks < 0_int64) return
+        
+        key = adjustl(name)
+        key = trim(key)
+        skip_update = .false.
+        
+        !$omp critical(prof_registry)
+        idx = 0
+        do i = 1, profile_entry_count
+            if (trim(profile_entries(i)%name) == key) then
+                idx = i
+                exit
+            end if
+        end do
+        
+        if (idx == 0) then
+            if (profile_entry_count < max_profile_entries) then
+                profile_entry_count = profile_entry_count + 1
+                idx = profile_entry_count
+                profile_entries(idx)%name = key
+            else
+                skip_update = .true.
+            end if
+        end if
+        
+        if (.not. skip_update) then
+            profile_entries(idx)%total_ticks = profile_entries(idx)%total_ticks + elapsed_ticks
+            profile_entries(idx)%call_count = profile_entries(idx)%call_count + 1
+            if (elapsed_ticks > profile_entries(idx)%max_ticks) then
+                profile_entries(idx)%max_ticks = elapsed_ticks
+            end if
+        end if
+        !$omp end critical(prof_registry)
+        
+        if (skip_update) return
+    end subroutine profiler_add
+
+    real(8) function profiler_ticks_to_seconds(ticks) result(seconds)
+        integer(int64), intent(in) :: ticks
+        seconds = real(ticks, 8) / real(profile_clock_rate, 8)
+    end function profiler_ticks_to_seconds
+
+    real(8) function profiler_total_seconds(name) result(total_sec)
+        character(len=*), intent(in) :: name
+        integer :: i
+        character(len=64) :: key
+
+        total_sec = 0.0d0
+        if (.not. profiling_enabled) return
+
+        key = adjustl(name)
+        key = trim(key)
+
+        do i = 1, profile_entry_count
+            if (trim(profile_entries(i)%name) == key) then
+                total_sec = profiler_ticks_to_seconds(profile_entries(i)%total_ticks)
+                return
+            end if
+        end do
+    end function profiler_total_seconds
+
+    subroutine profiler_write_csv(file_path)
+        character(len=*), intent(in) :: file_path
+        integer :: unit_num, ios, i
+        real(8) :: total_all, avg_time, percent_share
+        real(8) :: entry_total, entry_max
+
+        if (.not. profiling_enabled) return
+
+        total_all = 0.0d0
+        do i = 1, profile_entry_count
+            total_all = total_all + profiler_ticks_to_seconds(profile_entries(i)%total_ticks)
+        end do
+        if (total_all <= 0.0d0) total_all = 1.0d0
+
+        open(newunit=unit_num, file=trim(file_path), status='replace', action='write', iostat=ios)
+        if (ios /= 0) then
+            write(*,*) 'プロファイルCSVを開けません: ', trim(file_path)
+            return
+        end if
+
+        write(unit_num,'(A)') 'name,call_count,total_seconds,average_seconds,max_seconds,percent_total'
+        do i = 1, profile_entry_count
+            entry_total = profiler_ticks_to_seconds(profile_entries(i)%total_ticks)
+            entry_max = profiler_ticks_to_seconds(profile_entries(i)%max_ticks)
+            if (profile_entries(i)%call_count > 0) then
+                avg_time = entry_total / real(profile_entries(i)%call_count, 8)
+            else
+                avg_time = 0.0d0
+            end if
+            percent_share = (entry_total / total_all) * 100.0d0
+            write(unit_num,'(A,",",I0,",",ES14.6,",",ES14.6,",",ES14.6,",",ES12.4)') &
+                trim(profile_entries(i)%name), profile_entries(i)%call_count, entry_total, avg_time, entry_max, percent_share
+        end do
+
+        close(unit_num)
+    end subroutine profiler_write_csv
+
+    logical function profiler_is_enabled() result(flag)
+        flag = profiling_enabled
+    end function profiler_is_enabled
+
+end module profiling_mod
+
 ! メインプログラム
 program two_dimensional_dem
+    use profiling_mod
     use simulation_constants_mod
     use simulation_parameters_mod
     use particle_data_mod
@@ -164,12 +424,22 @@ program two_dimensional_dem
     
     ! 蛙飛び法用速度記録変数（位置更新時の速度v(t+Δt/2)）
     real(8) :: z_vel_at_position_update
+    integer :: interval_clock_last, interval_clock_curr
+    real(8) :: neighbor_time_last, neighbor_time_now
+    real(8) :: interval_elapsed, interval_neighbor_elapsed, interval_avg_step
+    integer(profiler_tick_kind) :: neighbor_block_token
+    integer(profiler_tick_kind) :: coulomb_token, integrate_token, output_token
 
     ! 計算時間計測開始
+    call profiler_init(.true.)
     call system_clock(start_time, clock_rate)
+    if (clock_rate <= 0) clock_rate = 1
+    interval_clock_last = start_time
+    neighbor_time_last = 0.0d0
     
     ! inputファイルからパラメータを読み込み
     call read_input_file
+    call profiler_set_enabled(enable_profiling)
     
     ! 初期位置と初期条件の設定
     call fposit_sub(rmax_particle_radius)
@@ -182,9 +452,48 @@ program two_dimensional_dem
     ! 各ステップの繰り返し計算
     do it_step = 1, max_calculation_steps
         current_time = current_time + time_step
-       
+        
+        ! サンプリング計測: N ステップごとにプロファイリングを有効化
+        if (profiling_sample_interval > 0) then
+            if (mod(it_step, profiling_sample_interval) == 1) then
+                call profiler_set_enabled(.true.)
+            else
+                call profiler_set_enabled(.false.)
+            end if
+        end if
+        
+        ! 壁引き抜き処理
+        if (enable_wall_withdraw .and. .not. wall_withdraw_done) then
+            if (it_step >= wall_withdraw_step) then
+                ! コンテナ壁の引き抜き（withdraw_wall_id > 0 の場合）
+                if (withdraw_wall_id > 0) then
+                    select case (withdraw_wall_id)
+                        case (1)
+                            left_wall_active = .false.
+                            write(*,*) '左壁を引き抜きました。ステップ: ', it_step
+                        case (2)
+                            bottom_wall_active = .false.
+                            write(*,*) '下壁を引き抜きました。ステップ: ', it_step
+                        case (3)
+                            right_wall_active = .false.
+                            write(*,*) '右壁を引き抜きました。ステップ: ', it_step
+                        case (4)
+                            top_wall_active = .false.
+                            write(*,*) '上壁を引き抜きました。ステップ: ', it_step
+                    end select
+                end if
+                ! 斜面壁の引き抜き（withdraw_sloped_wall_id > 0 の場合）
+                if (withdraw_sloped_wall_id > 0 .and. withdraw_sloped_wall_id <= num_walls) then
+                    wall_active(withdraw_sloped_wall_id) = .false.
+                    write(*,*) '斜面壁', withdraw_sloped_wall_id, 'を引き抜きました。ステップ: ', it_step
+                end if
+                wall_withdraw_done = .true.
+            end if
+        end if
+        
         if (.not. leapfrog_initialized) then
             ! 初回のみ: v(0) → v(Δt/2) への変換
+            call profiler_start('neighbor_search_contact', neighbor_block_token)
             call ncel_sub
             
             ! 全粒子の合力をクリア
@@ -204,18 +513,27 @@ program two_dimensional_dem
                 call pcont_sub(i, rmax_particle_radius)
             end do
             !$omp end parallel do
+
+            call profiler_stop('neighbor_search_contact', neighbor_block_token)
             
             ! クーロン力の計算
+            call profiler_start('coulomb_force', coulomb_token)
             call coulomb_force_sub()
+            call profiler_stop('coulomb_force', coulomb_token)
             
+            call profiler_start('integrate_leapfrog', integrate_token)
             call nposit_leapfrog_sub(static_judge_flag, 0)
+            call profiler_stop('integrate_leapfrog', integrate_token)
             leapfrog_initialized = .true.
         else
             ! 通常ループ: 蛙飛び法のメインステップ
             ! フェーズ1: 位置更新
+            call profiler_start('integrate_leapfrog', integrate_token)
             call nposit_leapfrog_sub(static_judge_flag, 1)
+            call profiler_stop('integrate_leapfrog', integrate_token)
             
             ! 新しい位置で力を計算
+            call profiler_start('neighbor_search_contact', neighbor_block_token)
             call ncel_sub
             
             ! 全粒子の合力をクリア
@@ -235,20 +553,36 @@ program two_dimensional_dem
                 call pcont_sub(i, rmax_particle_radius)
             end do
             !$omp end parallel do
+
+            call profiler_stop('neighbor_search_contact', neighbor_block_token)
             
             ! クーロン力の計算
+            call profiler_start('coulomb_force', coulomb_token)
             call coulomb_force_sub()
+            call profiler_stop('coulomb_force', coulomb_token)
             
             ! フェーズ2: 速度更新（新しい位置での力を使用）
+            call profiler_start('integrate_leapfrog', integrate_token)
             call nposit_leapfrog_sub(static_judge_flag, 2)
+            call profiler_stop('integrate_leapfrog', integrate_token)
         end if
 
         ! 静止状態の判定
         if (static_judge_flag == 1) then
             ! ある程度ステップを進めてから静止判定を有効にする
-            if (stop_when_static .and. it_step >= min_steps_before_static_check) then
-                write(*,*) '静止状態に到達しました。時刻: ', current_time
-                goto 200 ! シミュレーションループを抜ける
+            if (it_step >= min_steps_before_static_check) then
+                ! 充填状態の保存（壁引き抜き前かつ未保存の場合）
+                if (enable_wall_withdraw .and. .not. wall_withdraw_done .and. .not. filled_particles_saved) then
+                    if (it_step < wall_withdraw_step) then
+                        call save_filled_particles_sub
+                        filled_particles_saved = .true.
+                    end if
+                end if
+                
+                if (stop_when_static) then
+                    write(*,*) '静止状態に到達しました。時刻: ', current_time
+                    goto 200 ! シミュレーションループを抜ける
+                end if
             end if
         end if
 
@@ -261,7 +595,23 @@ program two_dimensional_dem
 
         ! グラフィック用データの出力
         if (it_step == 1 .or. mod(it_step, output_interval) == 0) then
+            call profiler_start('output', output_token)
             call gfout_sub(it_step, current_time, rmax_particle_radius)
+            call profiler_stop('output', output_token)
+        end if
+
+        if (enable_profiling .and. mod(it_step, 50000) == 0) then
+            call system_clock(interval_clock_curr)
+            interval_elapsed = real(interval_clock_curr - interval_clock_last, 8) / real(clock_rate, 8)
+            if (interval_elapsed < 0.0d0) interval_elapsed = 0.0d0
+            interval_avg_step = interval_elapsed / 50000.0d0
+            interval_clock_last = interval_clock_curr
+            neighbor_time_now = profiler_total_seconds('neighbor_search_contact')
+            interval_neighbor_elapsed = neighbor_time_now - neighbor_time_last
+            neighbor_time_last = neighbor_time_now
+            write(*,'(A,I0,A,F12.4,A,F12.6,A,F12.6)') &
+                '[Profile] 50000 step@', it_step, ' : Δt= ', interval_elapsed, ' s, Δt/step= ', interval_avg_step, &
+                ' s, neighbor= ', interval_neighbor_elapsed
         end if
     end do
 
@@ -269,6 +619,7 @@ program two_dimensional_dem
 
     ! バックアップデータの出力
     call bfout_sub
+    call profiler_write_csv(trim(output_dir)//'/timing_report.csv')
 
     close(10) ! particles.csv
     close(11) ! contacts.csv
@@ -321,6 +672,7 @@ contains
     !   - ヘッダ行や # で始まるコメント行、空行はスキップ
     !===============================================================
     subroutine load_particle_radii_from_file(filename, r_part, Nmax, Nread)
+        use profiling_mod, only: profiler_start, profiler_stop, profiler_tick_kind
         implicit none
         character(len=*), intent(in)  :: filename
         real(8),          intent(out) :: r_part(:)
@@ -331,7 +683,9 @@ contains
         integer :: ios_line, ios_val
         character(len=256) :: line
         real(8) :: d_tmp   ! 読み込んだ直径 [m]
+        integer(profiler_tick_kind) :: prof_token
 
+        call profiler_start('load_particle_radii_from_file', prof_token)
         Nread = 0
 
         ! ファイルを開く
@@ -340,6 +694,7 @@ contains
         if (ios_line /= 0) then
             write(*,*) '*** ERROR[load_particle_radii_from_file]: ', &
                         'cannot open file: ', trim(filename)
+            call profiler_stop('load_particle_radii_from_file', prof_token)
             stop
         end if
 
@@ -367,6 +722,7 @@ contains
                 write(*,*) '*** ERROR[load_particle_radii_from_file]: ', &
                             'too many particles in file: ', trim(filename)
                 write(*,*) '    Nmax = ', Nmax
+                call profiler_stop('load_particle_radii_from_file', prof_token)
                 stop
             end if
 
@@ -379,20 +735,108 @@ contains
         if (Nread == 0) then
             write(*,*) '*** ERROR[load_particle_radii_from_file]: ', &
                         'no valid data found in file: ', trim(filename)
+            call profiler_stop('load_particle_radii_from_file', prof_token)
             stop
         end if
 
+        call profiler_stop('load_particle_radii_from_file', prof_token)
     end subroutine load_particle_radii_from_file
+
+    !===============================================================
+    ! 粒子の電荷リスト [C] をファイルから読み込み，配列 q_part(:) を設定する
+    !   - filename : 入力ファイル名
+    !   - q_part   : 電荷 [C] を格納する配列
+    !   - Nmax     : q_part の最大要素数 (= size(q_part))
+    !   - Nread    : 実際に読み込んだ粒子数（出力）
+    !
+    ! 入力ファイル仕様：
+    !   - テキストファイル
+    !   - 1 列目に電荷 [C]（実数）
+    !   - ヘッダ行や # で始まるコメント行、空行はスキップ
+    !===============================================================
+    subroutine load_particle_charges_from_file(filename, q_part, Nmax, Nread)
+        use profiling_mod, only: profiler_start, profiler_stop, profiler_tick_kind
+        implicit none
+        character(len=*), intent(in)  :: filename
+        real(8),          intent(out) :: q_part(:)
+        integer,          intent(in)  :: Nmax
+        integer,          intent(out) :: Nread
+
+        integer :: unit
+        integer :: ios_line, ios_val
+        character(len=256) :: line
+        real(8) :: q_tmp   ! 読み込んだ電荷 [C]
+        integer(profiler_tick_kind) :: prof_token
+
+        call profiler_start('load_particle_charges_from_file', prof_token)
+        Nread = 0
+
+        ! ファイルを開く
+        open(newunit=unit, file=filename, status='old', action='read', &
+            iostat=ios_line)
+        if (ios_line /= 0) then
+            write(*,*) '*** ERROR[load_particle_charges_from_file]: ', &
+                        'cannot open file: ', trim(filename)
+            call profiler_stop('load_particle_charges_from_file', prof_token)
+            stop
+        end if
+
+        do
+            ! 1 行ずつ文字列として読み込む
+            read(unit, '(A)', iostat=ios_line) line
+            if (ios_line /= 0) exit   ! EOF or read error
+
+            ! 空行はスキップ
+            if (len_trim(line) == 0) cycle
+
+            ! コメント行（先頭が #）はスキップ
+            if (line(1:1) == '#') cycle
+
+            ! 文字列から実数（電荷）を読み取る
+            read(line, *, iostat=ios_val) q_tmp
+            if (ios_val /= 0) then
+                ! 数値に変換できない行（ヘッダなど）はスキップ
+                cycle
+            end if
+
+            ! 粒子数カウント
+            Nread = Nread + 1
+            if (Nread > Nmax) then
+                write(*,*) '*** ERROR[load_particle_charges_from_file]: ', &
+                            'too many particles in file: ', trim(filename)
+                write(*,*) '    Nmax = ', Nmax
+                call profiler_stop('load_particle_charges_from_file', prof_token)
+                stop
+            end if
+
+            ! 電荷を格納
+            q_part(Nread) = q_tmp
+        end do
+
+        close(unit)
+
+        if (Nread == 0) then
+            write(*,*) '*** ERROR[load_particle_charges_from_file]: ', &
+                        'no valid data found in file: ', trim(filename)
+            call profiler_stop('load_particle_charges_from_file', prof_token)
+            stop
+        end if
+
+        call profiler_stop('load_particle_charges_from_file', prof_token)
+    end subroutine load_particle_charges_from_file
 
     !> inputファイルからパラメータを読み込むサブルーチン
     subroutine read_input_file
         use wall_data_mod
+        use profiling_mod, only: profiler_start, profiler_stop, profiler_tick_kind
         implicit none
         character(len=256) :: line, keyword
         character(len=256) :: input_filename
         integer :: ios, unit_num
         real(8) :: value
+        integer(profiler_tick_kind) :: prof_token
         
+        call profiler_start('read_input_file', prof_token)
         ! inputファイル名の決定（コマンドライン引数または固定名）
         if (command_argument_count() > 0) then
             call get_command_argument(1, input_filename)
@@ -419,6 +863,7 @@ contains
         open(unit=unit_num, file=input_filename, status='old', action='read', iostat=ios)
         if (ios /= 0) then
             write(*,*) 'エラー: inputファイルを開けません: ', trim(input_filename)
+            call profiler_stop('read_input_file', prof_token)
             stop
         end if
         
@@ -449,71 +894,157 @@ contains
         enable_coulomb_force = .false.
         coulomb_constant = 8.99d9  ! クーロン定数 k = 1/(4πε₀) [N⋅m²/C²]
         default_charge = 0.0d0      ! デフォルト電荷 [C]
+        enable_profiling = .true.
         
         do
             read(unit_num, '(A)', iostat=ios) line
             if (ios /= 0) exit
             
             ! コメント行と空行をスキップ
-            if (line(1:1) == '#' .or. line(1:1) == '!' .or. len_trim(line) == 0) cycle
+            if (len_trim(line) == 0) cycle
+            if (line(1:1) == '#' .or. line(1:1) == '!') cycle
             
-            ! キーワードと値を分離
-            read(line, *, iostat=ios) keyword, value
+            ! キーワードを読み取り
+            read(line, *, iostat=ios) keyword
             if (ios /= 0) cycle
             
             select case (trim(keyword))
+                ! 数値パラメータ
                 case ('TIME_STEP')
-                    time_step = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) time_step = value
                 case ('FRICTION_COEFF_PARTICLE')
-                    friction_coeff_particle = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) friction_coeff_particle = value
                 case ('FRICTION_COEFF_WALL')
-                    friction_coeff_wall = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) friction_coeff_wall = value
                 case ('ROLLING_FRICTION_COEFF_PARTICLE')
-                    rolling_friction_coeff_particle = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) rolling_friction_coeff_particle = value
                 case ('ROLLING_FRICTION_COEFF_WALL')
-                    rolling_friction_coeff_wall = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) rolling_friction_coeff_wall = value
                 case ('YOUNG_MODULUS_PARTICLE')
-                    young_modulus_particle = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) young_modulus_particle = value
                 case ('YOUNG_MODULUS_WALL')
-                    young_modulus_wall = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) young_modulus_wall = value
                 case ('POISSON_RATIO_PARTICLE')
-                    poisson_ratio_particle = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) poisson_ratio_particle = value
                 case ('POISSON_RATIO_WALL')
-                    poisson_ratio_wall = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) poisson_ratio_wall = value
                 case ('PARTICLE_DENSITY')
-                    particle_density = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) particle_density = value
                 case ('PARTICLE_RADIUS_LARGE')
-                    particle_radius_large = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) particle_radius_large = value
                 case ('PARTICLE_RADIUS_SMALL')
-                    particle_radius_small = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) particle_radius_small = value
                 case ('CONTAINER_WIDTH')
-                    container_width = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) container_width = value
                 case ('CONTAINER_HEIGHT')
-                    container_height = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) container_height = value
                 case ('PARTICLE_GEN_LAYERS')
-                    particle_gen_layers = int(value)
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) particle_gen_layers = int(value)
                 case ('RANDOM_SEED')
-                    random_seed = int(value)
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) random_seed = int(value)
                 case ('DISABLE_CELL_ALGORITHM')
-                    disable_cell_algorithm = (int(value) == 1)
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) disable_cell_algorithm = (int(value) == 1)
                 case ('STOP_WHEN_STATIC')
-                    stop_when_static = (int(value) == 1)
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) stop_when_static = (int(value) == 1)
                 case ('KINETIC_ENERGY_THRESHOLD')
-                    kinetic_energy_threshold = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) kinetic_energy_threshold = value
                 case ('CELL_SIZE_OVERRIDE')
-                    cell_size_override = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) cell_size_override = value
                 case ('MAX_CALCULATION_STEPS')
-                    max_calculation_steps = int(value)
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) max_calculation_steps = int(value)
                 case ('MIN_STEPS_BEFORE_STATIC_CHECK')
-                    min_steps_before_static_check = int(value)
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) min_steps_before_static_check = int(value)
                 case ('ENABLE_COULOMB_FORCE')
-                    enable_coulomb_force = (int(value) == 1)
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) enable_coulomb_force = (int(value) == 1)
                 case ('COULOMB_CONSTANT')
-                    coulomb_constant = value
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) coulomb_constant = value
                 case ('DEFAULT_CHARGE')
-                    default_charge = 0.0d0
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) default_charge = value
                 case ('OUTPUT_INTERVAL')
-                    output_interval = int(value)
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) output_interval = int(value)
+                case ('ENABLE_PROFILING')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) enable_profiling = (int(value) == 1)
+                case ('PROFILING_SAMPLE_INTERVAL')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) profiling_sample_interval = int(value)
+                
+                ! 半径分布パラメータ
+                case ('RADIUS_DISTRIBUTION_TYPE')
+                    read(line, *, iostat=ios) keyword, radius_distribution_type
+                case ('RADIUS_LIST_FILE')
+                    read(line, *, iostat=ios) keyword, radius_list_file
+                case ('RADIUS_UNIFORM_MIN')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) radius_uniform_min = value
+                case ('RADIUS_UNIFORM_MAX')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) radius_uniform_max = value
+                case ('RADIUS_NORMAL_MEAN')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) radius_normal_mean = value
+                case ('RADIUS_NORMAL_STD')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) radius_normal_std = value
+                
+                ! 電荷分布パラメータ
+                case ('CHARGE_DISTRIBUTION_TYPE')
+                    read(line, *, iostat=ios) keyword, charge_distribution_type
+                case ('CHARGE_LIST_FILE')
+                    read(line, *, iostat=ios) keyword, charge_list_file
+                case ('CHARGE_UNIFORM_MIN')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) charge_uniform_min = value
+                case ('CHARGE_UNIFORM_MAX')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) charge_uniform_max = value
+                case ('CHARGE_NORMAL_MEAN')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) charge_normal_mean = value
+                case ('CHARGE_NORMAL_STD')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) charge_normal_std = value
+                
+                ! 壁引き抜きパラメータ
+                case ('ENABLE_WALL_WITHDRAW')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) enable_wall_withdraw = (int(value) == 1)
+                case ('WALL_WITHDRAW_STEP')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) wall_withdraw_step = int(value)
+                case ('WITHDRAW_WALL_ID')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) withdraw_wall_id = int(value)
+                case ('WITHDRAW_SLOPED_WALL_ID')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) withdraw_sloped_wall_id = int(value)
+                
                 case default
                     write(*,*) '警告: 不明なキーワード: ', trim(keyword)
             end select
@@ -526,29 +1057,38 @@ contains
         ! 数値積分法の表示
         write(*,*) '数値積分法: 蛙飛び法'
         
-        ! 明示座標ファイルの存在チェック（固定パス）
-        positions_file = 'inputs/particle_positions.dat'
+        ! 明示座標ファイルの存在チェック（優先順位: filled_particles.dat > particle_positions.dat）
         use_explicit_positions = .false.
+        positions_file = 'inputs/filled_particles.dat'
         inquire(file=trim(positions_file), exist=use_explicit_positions)
         if (use_explicit_positions) then
-            write(*,*) '粒子配置: 明示座標ファイルを使用: ', trim(positions_file)
+            write(*,*) '粒子配置: 充填状態ファイルを使用: ', trim(positions_file)
         else
-            write(*,*) '粒子配置: 乱数生成（明示座標ファイルなし）'
+            positions_file = 'inputs/particle_positions.dat'
+            inquire(file=trim(positions_file), exist=use_explicit_positions)
+            if (use_explicit_positions) then
+                write(*,*) '粒子配置: 明示座標ファイルを使用: ', trim(positions_file)
+            else
+                write(*,*) '粒子配置: 乱数生成（明示座標ファイルなし）'
+            end if
         end if
 
         call read_walls_file
-        
+        call profiler_stop('read_input_file', prof_token)
     end subroutine read_input_file
 
     !> 斜面壁ファイルを読み込むサブルーチン
     subroutine read_walls_file
         use wall_data_mod
+        use profiling_mod, only: profiler_start, profiler_stop, profiler_tick_kind
         implicit none
         integer :: unit_num, ios, line_no
         character(len=256) :: line
         real(8) :: x1, z1, x2, z2
         real(8) :: dx, dz, length_val
         logical :: file_exists
+        integer(profiler_tick_kind) :: prof_token
+        call profiler_start('read_walls_file', prof_token)
         
         walls_file_exists = .false.
         num_walls = 0
@@ -556,6 +1096,7 @@ contains
         inquire(file=trim(walls_file), exist=file_exists)
         if (.not. file_exists) then
             write(*,*) '斜面壁ファイルなし: ', trim(walls_file)
+            call profiler_stop('read_walls_file', prof_token)
             return
         end if
         
@@ -563,6 +1104,7 @@ contains
         open(unit=unit_num, file=trim(walls_file), status='old', action='read', iostat=ios)
         if (ios /= 0) then
             write(*,*) 'エラー: 斜面壁ファイルを開けません: ', trim(walls_file)
+            call profiler_stop('read_walls_file', prof_token)
             stop 'read_walls_file: open failed'
         end if
         
@@ -604,6 +1146,7 @@ contains
             wall_tangent_z(num_walls) = dz / length_val
             wall_normal_x(num_walls) = -wall_tangent_z(num_walls)
             wall_normal_z(num_walls) =  wall_tangent_x(num_walls)
+            wall_active(num_walls) = .true.
         end do
         
         close(unit_num)
@@ -614,7 +1157,7 @@ contains
         else
             write(*,*) '斜面壁ファイルに有効な壁がありません: ', trim(walls_file)
         end if
-        
+        call profiler_stop('read_walls_file', prof_token)
     end subroutine read_walls_file
 
     !> 初期粒子配置と構成を設定するサブルーチン
@@ -622,8 +1165,10 @@ contains
         
         use simulation_constants_mod, only: ni_max, PI_VAL
         use simulation_parameters_mod
-        use particle_data_mod, only: radius, x_coord, z_coord, rotation_angle
+        use particle_data_mod, only: radius, x_coord, z_coord, rotation_angle, charge
         use cell_system_mod ! モジュールからセルシステム関連変数を取得
+        use wall_data_mod, only: num_walls, wall_x_start
+        use profiling_mod, only: profiler_start, profiler_stop, profiler_tick_kind
         implicit none
 
         real(8), intent(out) :: rmax_out ! 出力: 最大粒子半径
@@ -640,7 +1185,17 @@ contains
         ! z座標範囲制限用
         real(8) :: z_min_target, z_max_target, z_range, layer_height
         integer :: max_layers_for_range, original_layers
+        integer(profiler_tick_kind) :: prof_token
+        ! 壁引き抜き用粒子配置範囲
+        real(8) :: effective_container_width
+        
+        ! 分布用変数
+        real(8), allocatable :: radius_list(:), charge_list(:)
+        integer :: radius_list_count, charge_list_count
+        real(8) :: generated_radius, generated_charge
+        integer :: radius_list_idx, charge_list_idx
 
+        call profiler_start('fposit_sub', prof_token)
         r1_val = particle_radius_large
         r2_val = particle_radius_small
         
@@ -688,15 +1243,72 @@ contains
                 stop 'fposit_sub: 有効粒子なし'
             end if
         else
-            ! 既存の乱数配置
-            rmax_out = r1_val             ! 最大半径をr1_valとする
-            rmin_val = r2_val             ! 最小半径をr2_valとする
+            ! 乱数配置モード
+            
+            ! 半径リストファイルの読み込み（ファイル指定の場合）
+            radius_list_count = 0
+            radius_list_idx = 0
+            if (trim(radius_distribution_type) == 'file') then
+                allocate(radius_list(ni_max))
+                call load_particle_radii_from_file(trim(radius_list_file), radius_list, ni_max, radius_list_count)
+                write(*,*) '半径リストファイルから', radius_list_count, '個の半径を読み込みました'
+            end if
+            
+            ! 電荷リストファイルの読み込み（ファイル指定の場合）
+            charge_list_count = 0
+            charge_list_idx = 0
+            if (trim(charge_distribution_type) == 'file') then
+                allocate(charge_list(ni_max))
+                call load_particle_charges_from_file(trim(charge_list_file), charge_list, ni_max, charge_list_count)
+                write(*,*) '電荷リストファイルから', charge_list_count, '個の電荷を読み込みました'
+            end if
+            
+            ! 分布タイプに応じた情報表示
+            write(*,*) '半径分布タイプ: ', trim(radius_distribution_type)
+            write(*,*) '電荷分布タイプ: ', trim(charge_distribution_type)
+            
+            ! rmax_out と rmin_val の初期推定（セルサイズ計算用）
+            select case (trim(radius_distribution_type))
+                case ('fixed')
+                    rmax_out = max(r1_val, r2_val)
+                    rmin_val = min(r1_val, r2_val)
+                case ('file')
+                    if (radius_list_count > 0) then
+                        rmax_out = maxval(radius_list(1:radius_list_count))
+                        rmin_val = minval(radius_list(1:radius_list_count))
+                    else
+                        rmax_out = r1_val
+                        rmin_val = r2_val
+                    end if
+                case ('uniform')
+                    rmax_out = radius_uniform_max
+                    rmin_val = radius_uniform_min
+                case ('normal')
+                    ! 正規分布の場合、3σ範囲を考慮
+                    rmax_out = radius_normal_mean + 3.0d0 * radius_normal_std
+                    rmin_val = max(1.0d-6, radius_normal_mean - 3.0d0 * radius_normal_std)
+                case default
+                    rmax_out = r1_val
+                    rmin_val = r2_val
+            end select
+            
             rn_val = rmax_out + 1.0d-5    ! パッキングのための有効半径
-            ipx_calc = idint(container_width / (2.0d0 * rn_val)) ! 1行あたりの粒子数 (概算)
+            
+            ! 壁引き抜きが有効かつ引き抜き対象の斜面壁が指定されている場合、
+            ! 粒子配置のx範囲を壁のx座標までに制限
+            if (enable_wall_withdraw .and. withdraw_sloped_wall_id > 0 &
+                .and. withdraw_sloped_wall_id <= num_walls) then
+                effective_container_width = wall_x_start(withdraw_sloped_wall_id)
+                write(*,*) '壁引き抜きモード: 粒子配置x範囲を0〜', effective_container_width, 'に制限'
+            else
+                effective_container_width = container_width
+            end if
+            
+            ipx_calc = idint(effective_container_width / (2.0d0 * rn_val)) ! 1行あたりの粒子数 (概算)
             
             ! z座標範囲を0.3〜0.6に制限するために層数を調整
-            z_min_target = 0.3d0
-            z_max_target = 0.4d0
+            z_min_target = 0.0d0
+            z_max_target = 0.5d0
             z_range = z_max_target - z_min_target
             layer_height = 2.0d0 * rn_val
             max_layers_for_range = idint(z_range / layer_height)
@@ -734,15 +1346,84 @@ contains
                     ! z座標を0.3でオフセット
                     z_coord(num_particles) = z_min_target + 2.0d0 * rn_val * (i_layer - 1) + rn_val
                     rotation_angle(num_particles) = 0.0d0 ! 回転角を初期化
-                    charge(num_particles) = default_charge ! 電荷を初期化
-                    call custom_random(random_seed, random_uniform_val)
-                    if (random_uniform_val < 0.5d0) then
-                        radius(num_particles) = r1_val
-                    else
-                        radius(num_particles) = r2_val
-                    end if
+                    
+                    ! 半径の割り当て（分布タイプに応じて）
+                    select case (trim(radius_distribution_type))
+                        case ('fixed')
+                            call custom_random(random_seed, random_uniform_val)
+                            if (random_uniform_val < 0.5d0) then
+                                radius(num_particles) = r1_val
+                            else
+                                radius(num_particles) = r2_val
+                            end if
+                        case ('file')
+                            radius_list_idx = radius_list_idx + 1
+                            if (radius_list_idx > radius_list_count) then
+                                ! 半径リストが不足した場合、配置を打ち切る（循環使用しない）
+                                write(*,*) '警告: 半径リストの粒子数が不足しています。配置を打ち切ります。'
+                                write(*,*) '  半径リスト数: ', radius_list_count, ', 配置試行数: ', radius_list_idx
+                                num_particles = num_particles - 1  ! 現在の粒子をキャンセル
+                                current_particle_count = current_particle_count - 1
+                                goto 100  ! 粒子配置ループを抜ける
+                            end if
+                            radius(num_particles) = radius_list(radius_list_idx)
+                        case ('uniform')
+                            call generate_uniform_random(random_seed, radius_uniform_min, radius_uniform_max, generated_radius)
+                            radius(num_particles) = generated_radius
+                        case ('normal')
+                            call generate_normal_random(random_seed, radius_normal_mean, radius_normal_std, generated_radius)
+                            ! 負の半径を防止
+                            if (generated_radius < 1.0d-6) generated_radius = 1.0d-6
+                            radius(num_particles) = generated_radius
+                        case default
+                            radius(num_particles) = r1_val
+                    end select
+                    
+                    ! 電荷の割り当て（分布タイプに応じて）
+                    select case (trim(charge_distribution_type))
+                        case ('fixed')
+                            charge(num_particles) = default_charge
+                        case ('file')
+                            charge_list_idx = charge_list_idx + 1
+                            if (charge_list_idx > charge_list_count) then
+                                ! リストを循環使用
+                                charge_list_idx = mod(charge_list_idx - 1, charge_list_count) + 1
+                            end if
+                            charge(num_particles) = charge_list(charge_list_idx)
+                        case ('uniform')
+                            call generate_uniform_random(random_seed, charge_uniform_min, charge_uniform_max, generated_charge)
+                            charge(num_particles) = generated_charge
+                        case ('normal')
+                            call generate_normal_random(random_seed, charge_normal_mean, charge_normal_std, generated_charge)
+                            charge(num_particles) = generated_charge
+                        case default
+                            charge(num_particles) = default_charge
+                    end select
                 end do
             end do
+100         continue  ! 半径リスト不足時のジャンプ先
+            
+            ! 半径リスト数 > 配置可能数の警告
+            if (trim(radius_distribution_type) == 'file' .and. radius_list_count > 0) then
+                if (radius_list_count > num_particles) then
+                    write(*,*) '========================================'
+                    write(*,*) '警告: 半径リストの粒子数が配置可能数を超えています'
+                    write(*,*) '  半径リスト数    : ', radius_list_count
+                    write(*,*) '  配置された粒子数: ', num_particles
+                    write(*,*) '  未使用の半径数  : ', (radius_list_count - num_particles)
+                    write(*,*) '========================================'
+                end if
+            end if
+            
+            ! 配列の解放
+            if (allocated(radius_list)) deallocate(radius_list)
+            if (allocated(charge_list)) deallocate(charge_list)
+            
+            ! 実際に生成された粒子の半径から rmax_out, rmin_val を再計算
+            if (num_particles > 0) then
+                rmax_out = maxval(radius(1:num_particles))
+                rmin_val = minval(radius(1:num_particles))
+            end if
         end if
         write(*,*) '生成された粒子数: ', num_particles
 
@@ -796,6 +1477,7 @@ contains
             stop 'fposit_sub: セル配列が小さすぎます'
         end if
 
+        call profiler_stop('fposit_sub', prof_token)
     end subroutine fposit_sub
 
     !> 材料物性値を初期化し、定数を計算するサブルーチン
@@ -804,9 +1486,12 @@ contains
         use simulation_parameters_mod, only: time_step, reference_overlap
         use particle_data_mod, only: radius, mass, moment_inertia 
         use cell_system_mod, only: num_particles 
+        use profiling_mod, only: profiler_start, profiler_stop, profiler_tick_kind
         implicit none
         integer :: i
+        integer(profiler_tick_kind) :: prof_token
         
+        call profiler_start('inmat_sub', prof_token)
         ! time_step, particle_densityなどの値はモジュールsimulation_parameters_modで設定されていると仮定
         ! 粒子のポアソン比に基づいてせん断弾性係数と法線方向弾性係数の比(so)を計算
         shear_to_normal_stiffness_ratio = 1.0d0 / (2.0d0 * (1.0d0 + poisson_ratio_particle))
@@ -831,6 +1516,7 @@ contains
 
         end do
         !$omp end parallel do
+        call profiler_stop('inmat_sub', prof_token)
     end subroutine inmat_sub
 
     !> 接触力関連の配列を初期化するサブルーチン
@@ -838,8 +1524,12 @@ contains
         use simulation_constants_mod, only: nj_max
         use particle_data_mod
         use cell_system_mod, only: num_particles
+        use profiling_mod, only: profiler_start, profiler_stop, profiler_tick_kind
         implicit none
         integer :: i, j
+        integer(profiler_tick_kind) :: prof_token
+
+        call profiler_start('init_sub', prof_token)
 
         ! 実際の粒子数まで繰り返す
         if (num_particles > 0) then
@@ -858,6 +1548,7 @@ contains
             z_disp_incr(1:num_particles) = 0.0d0
             rot_disp_incr(1:num_particles) = 0.0d0
         end if
+        call profiler_stop('init_sub', prof_token)
     end subroutine init_sub
 
     !> 近傍探索のために粒子をセルに割り当てるサブルーチン
@@ -915,7 +1606,8 @@ contains
 
     !> 粒子iと壁との接触力を計算するサブルーチン
     subroutine wcont_sub(particle_idx)
-        use simulation_parameters_mod, only: container_width, container_height
+        use simulation_parameters_mod, only: container_width, container_height, &
+            left_wall_active, bottom_wall_active, right_wall_active, top_wall_active
         use particle_data_mod
         use cell_system_mod, only: num_particles
         use wall_data_mod
@@ -941,15 +1633,15 @@ contains
         ! 左壁 (contact_partner_idx = num_particles + 1)
         wall_contact_slot_idx = 11 ! 元のコードでの左壁用の固定スロット
         wall_partner_id = num_particles + 1
-        if (xi < ri_particle) then  ! 左壁と接触
-            en_coeff = 0.5d0
-            et_coeff = 0.5d0
+        if (left_wall_active .and. xi < ri_particle) then  ! 左壁と接触
+            en_coeff = 0.9d0
+            et_coeff = 0.9d0
             wall_angle_sin = 0.0d0  ! 法線ベクトル成分 sin(alpha_ij) (粒子中心から壁中心へ向かうベクトル)
             wall_angle_cos = -1.0d0 ! 法線ベクトル成分 cos(alpha_ij)
             overlap_gap = ri_particle - xi ! 元のコードでは dabs(xi)、ここでは重なり量を正とする
             contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
             call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
-        else                        ! 接触なし
+        else                        ! 接触なし（または壁が無効）
             normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
             shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
             contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
@@ -958,15 +1650,15 @@ contains
         ! 下壁 (contact_partner_idx = num_particles + 2)
         wall_contact_slot_idx = 12 ! 元のコードでの下壁用の固定スロット
         wall_partner_id = num_particles + 2
-        if (zi < ri_particle) then  ! 下壁と接触
-            en_coeff = 0.5d0
-            et_coeff = 0.5d0
+        if (bottom_wall_active .and. zi < ri_particle) then  ! 下壁と接触
+            en_coeff = 0.9d0
+            et_coeff = 0.9d0
             wall_angle_sin = -1.0d0
             wall_angle_cos = 0.0d0
             overlap_gap = ri_particle - zi 
             contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
             call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
-        else                        ! 接触なし
+        else                        ! 接触なし（または壁が無効）
             normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
             shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
             contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
@@ -975,15 +1667,15 @@ contains
         ! 右壁 (contact_partner_idx = num_particles + 3)
         wall_contact_slot_idx = 13 ! 元のコードでの右壁用の固定スロット
         wall_partner_id = num_particles + 3
-        if (xi + ri_particle > container_width) then ! 右壁と接触
-            en_coeff = 0.5d0
-            et_coeff = 0.5d0
+        if (right_wall_active .and. xi + ri_particle > container_width) then ! 右壁と接触
+            en_coeff = 0.9d0
+            et_coeff = 0.9d0
             wall_angle_sin = 0.0d0
             wall_angle_cos = 1.0d0
             overlap_gap = (xi + ri_particle) - container_width 
             contact_partner_idx(particle_idx, wall_contact_slot_idx) = wall_partner_id
             call actf_sub(particle_idx, wall_partner_id, wall_contact_slot_idx, wall_angle_sin, wall_angle_cos, overlap_gap, en_coeff, et_coeff)
-        else                                        ! 接触なし
+        else                                        ! 接触なし（または壁が無効）
             normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
             shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
             contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
@@ -991,12 +1683,12 @@ contains
     
         ! 上壁 (contact_partner_idx = num_particles + 4)
         ! container_height > 0の場合のみ上壁を有効化
-        if (container_height > 0.0d0) then
+        if (container_height > 0.0d0 .and. top_wall_active) then
             wall_contact_slot_idx = 10 ! 上壁用の固定スロット
             wall_partner_id = num_particles + 4
             if (zi + ri_particle > container_height) then ! 上壁と接触
-                en_coeff = 0.5d0
-                et_coeff = 0.5d0
+                en_coeff = 0.9d0
+                et_coeff = 0.9d0
                 wall_angle_sin = 1.0d0
                 wall_angle_cos = 0.0d0
                 overlap_gap = (zi + ri_particle) - container_height
@@ -1007,14 +1699,35 @@ contains
                 shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
                 contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
             end if
+        else if (container_height > 0.0d0 .and. .not. top_wall_active) then
+            ! 上壁が無効化された場合、接触スロットをクリア
+            wall_contact_slot_idx = 10
+            normal_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
+            shear_force_contact(particle_idx, wall_contact_slot_idx) = 0.0d0
+            contact_partner_idx(particle_idx, wall_contact_slot_idx) = 0
         end if
     
         ! 斜面壁 (任意本数、ファイルで定義)
         if (num_walls > 0 .and. first_sloped_slot <= nj_max) then
             do wall_idx = 1, num_walls
+                ! 無効な壁はスキップ
+                if (.not. wall_active(wall_idx)) then
+                    ! 既存の接触スロットがあればクリア
+                    wall_partner_id = num_particles + 4 + wall_idx
+                    do slot_idx = first_sloped_slot, nj_max
+                        if (contact_partner_idx(particle_idx, slot_idx) == wall_partner_id) then
+                            normal_force_contact(particle_idx, slot_idx) = 0.0d0
+                            shear_force_contact(particle_idx, slot_idx) = 0.0d0
+                            contact_partner_idx(particle_idx, slot_idx) = 0
+                            exit
+                        end if
+                    end do
+                    cycle
+                end if
+                
                 wall_partner_id = num_particles + 4 + wall_idx
-                en_coeff = 0.5d0
-                et_coeff = 0.5d0
+                en_coeff = 0.9d0
+                et_coeff = 0.9d0
                 proj_len = (xi - wall_x_start(wall_idx)) * wall_tangent_x(wall_idx) + &
                            (zi - wall_z_start(wall_idx)) * wall_tangent_z(wall_idx)
                 proj_len = max(0.0d0, min(proj_len, wall_length(wall_idx)))
@@ -1203,7 +1916,7 @@ contains
 
                         ! 実際の力計算
                         call actf_sub(particle_i_idx, particle_j_idx, contact_slot_for_i_j, &
-                                      contact_angle_sin, contact_angle_cos, overlap_gap, 0.5d0, 0.5d0)
+                                      contact_angle_sin, contact_angle_cos, overlap_gap, 0.9d0, 0.9d0)
                     else ! 幾何学的な接触なし / 粒子が離れた
                         ! デバッグ出力 (検証モードのみ、最初の数回のみ)
                         ! if (validation_mode .and. particle_i_idx == 1 .and. particle_j_idx == 2) then
@@ -1241,7 +1954,9 @@ contains
         real(8) :: qi, qj
         
         ! クーロン力が無効化されている場合は何もしない
-        if (.not. enable_coulomb_force) return
+        if (.not. enable_coulomb_force) then
+            return
+        end if
         
         ! 全粒子ペアについてクーロン力を計算
         !$omp parallel do schedule(dynamic) private(i, j, qi, qj, dx, dz, dist_sq, dist, dist_cubed, force_magnitude, fx, fz)
@@ -1621,6 +2336,7 @@ contains
     end subroutine actf_sub
 
     !> グラフィック用データを出力するサブルーチン
+    !> 出力形式: 標準CSV (analyze_repose_angle.py, animate_pem.py と互換)
     subroutine gfout_sub(iter_step, time_val, rmax_val)
         use simulation_constants_mod, only: nj_max, GRAVITY_ACCEL
         use simulation_parameters_mod, only: container_width, container_height, time_step, output_dir
@@ -1637,12 +2353,13 @@ contains
         if (iter_step == 1) then
             file_path = trim(output_dir) // '/particles.csv'
             open(unit=10, file=trim(file_path), status='replace', action='write')
+            ! CSVヘッダー行を最初に一度だけ出力
+            write(10,'(A)') 'step,time,id,x,z,radius,vx,vz,omega,angle,mass,charge'
             
             file_path = trim(output_dir) // '/contacts.csv'
             open(unit=11, file=trim(file_path), status='replace', action='write')
         end if
 
-        write(10,*) num_particles, time_val, container_width, container_height, rmax_val
         if (num_particles > 0) then
             ! 出力用補正速度の準備（蛙飛び法のみ 0.5*dt*加速度で補正）
             dt = time_step
@@ -1656,14 +2373,15 @@ contains
                 rotation_vel_out(i) = rotation_vel(i) - 0.5d0 * dt * (moment_sum(i) / moment_inertia(i))
             end do
 
-            ! CSV形式で出力 (x, z, r, vx, vz, v_rot, theta)
-            write(10,*) "x,z,radius,vx,vz,v_rot,theta"
+            ! 標準CSV形式で出力 (step, time, id, x, z, radius, vx, vz, omega, angle, mass, charge)
             do i = 1, num_particles
-                write(10,'(ES12.5,A,ES12.5,A,ES12.5,A,ES12.5,A,ES12.5,A,ES12.5,A,ES12.5)') &
-                    x_coord(i), ",", z_coord(i), ",", radius(i), ",", &
-                    vx_out(i), ",", vz_out(i), ",", rotation_vel_out(i), ",", &
-                    rotation_angle(i)
+                write(10,'(I8,",",ES14.7,",",I8,",",ES14.7,",",ES14.7,",",ES14.7,",",ES14.7,",",ES14.7,",",ES14.7,",",ES14.7,",",ES14.7,",",ES14.7)') &
+                    iter_step, time_val, i, x_coord(i), z_coord(i), radius(i), &
+                    vx_out(i), vz_out(i), rotation_vel_out(i), rotation_angle(i), &
+                    mass(i), charge(i)
             end do
+            
+            deallocate(vx_out, vz_out, rotation_vel_out)
         end if
         
         ! 接触力の出力 (オプション、graph21.dより)
@@ -1686,11 +2404,15 @@ contains
         use simulation_parameters_mod
         use particle_data_mod
         use cell_system_mod
+        use profiling_mod, only: profiler_start, profiler_stop, profiler_tick_kind
         implicit none
         integer :: i, j
         real(8) :: rmax_dummy_val ! 元のbfoutはrmaxを必要とするが、メインの呼び出しからは渡されない。
                                   ! リストアに不可欠でないか、粒子半径から取得すると仮定。
         character(len=512) :: file_path
+        integer(profiler_tick_kind) :: prof_token
+
+        call profiler_start('bfout_sub', prof_token)
         
         if (num_particles > 0) then
            rmax_dummy_val = maxval(radius(1:num_particles))
@@ -1717,7 +2439,51 @@ contains
             end do
         end if
         close(13)
+        call profiler_stop('bfout_sub', prof_token)
     end subroutine bfout_sub
+
+    !> 充填状態の粒子データを保存するサブルーチン
+    subroutine save_filled_particles_sub
+        use simulation_parameters_mod, only: output_dir
+        use particle_data_mod
+        use cell_system_mod, only: num_particles
+        use profiling_mod, only: profiler_start, profiler_stop, profiler_tick_kind
+        implicit none
+        integer :: i, unit_num, ios
+        character(len=512) :: file_path
+        integer(profiler_tick_kind) :: prof_token
+        
+        call profiler_start('save_filled_particles_sub', prof_token)
+        
+        file_path = 'inputs/filled_particles.dat'
+        open(newunit=unit_num, file=trim(file_path), status='replace', action='write', iostat=ios)
+        if (ios /= 0) then
+            write(*,*) 'エラー: 充填状態ファイルを開けません: ', trim(file_path)
+            call profiler_stop('save_filled_particles_sub', prof_token)
+            return
+        end if
+        
+        ! ヘッダーコメントを書き込み
+        write(unit_num, '(A)') '# 充填・堆積完了時の粒子状態'
+        write(unit_num, '(A)') '# フォーマット: x z radius [charge]'
+        write(unit_num, '(A)') '# x: 粒子中心のx座標 [m]'
+        write(unit_num, '(A)') '# z: 粒子中心のz座標 [m]'
+        write(unit_num, '(A)') '# radius: 粒子半径 [m]'
+        write(unit_num, '(A)') '# charge: 粒子電荷 [C] (オプション)'
+        
+        ! 粒子データを書き込み
+        if (num_particles > 0) then
+            do i = 1, num_particles
+                write(unit_num, '(ES14.7,1X,ES14.7,1X,ES14.7,1X,ES14.7)') &
+                    x_coord(i), z_coord(i), radius(i), charge(i)
+            end do
+        end if
+        
+        close(unit_num)
+        write(*,*) '充填状態を保存しました: ', trim(file_path), ' (粒子数: ', num_particles, ')'
+        
+        call profiler_stop('save_filled_particles_sub', prof_token)
+    end subroutine save_filled_particles_sub
 
     !> 擬似乱数を生成するサブルーチン
     subroutine custom_random(seed_io, random_val_out)
@@ -1733,5 +2499,37 @@ contains
         random_val_out = dble(seed_io) * 0.4656613d-9 ! 元の正規化定数 (1.0 / 2147483648.0)
 
     end subroutine custom_random
+
+    !> 一様分布から乱数を生成するサブルーチン
+    subroutine generate_uniform_random(seed_io, min_val, max_val, result_out)
+        implicit none
+        integer, intent(inout) :: seed_io
+        real(8), intent(in) :: min_val, max_val
+        real(8), intent(out) :: result_out
+        real(8) :: u
+        
+        call custom_random(seed_io, u)
+        result_out = min_val + u * (max_val - min_val)
+    end subroutine generate_uniform_random
+
+    !> 正規分布から乱数を生成するサブルーチン (Box-Muller法)
+    subroutine generate_normal_random(seed_io, mean_val, std_val, result_out)
+        use simulation_constants_mod, only: PI_VAL
+        implicit none
+        integer, intent(inout) :: seed_io
+        real(8), intent(in) :: mean_val, std_val
+        real(8), intent(out) :: result_out
+        real(8) :: u1, u2, z
+        
+        ! Box-Muller変換
+        call custom_random(seed_io, u1)
+        call custom_random(seed_io, u2)
+        
+        ! u1が0に非常に近い場合を回避
+        if (u1 < 1.0d-10) u1 = 1.0d-10
+        
+        z = sqrt(-2.0d0 * log(u1)) * cos(2.0d0 * PI_VAL * u2)
+        result_out = mean_val + std_val * z
+    end subroutine generate_normal_random
 
 end program two_dimensional_dem
