@@ -56,6 +56,10 @@ module simulation_parameters_mod
     real(8) :: coulomb_constant               ! k: クーロン定数 [N⋅m²/C²]
     real(8) :: default_charge                 ! デフォルトの粒子電荷 [C]
     logical :: enable_coulomb_force           ! クーロン力の有効化フラグ
+    real(8) :: coulomb_cutoff = 0.1d0         ! クーロン力カットオフ半径 [m] (0=カットオフなし)
+    real(8) :: coulomb_softening = 0.0d0      ! ソフトニングパラメータ δ [m] (発散回避用)
+    logical :: coulomb_shift_force = .true.   ! シフトドフォースを使用するか（カットオフで力を連続に）
+    logical :: coulomb_use_cell = .true.      ! セル法を使用するか（false=旧来の全対全計算）
     character(len=256) :: output_dir          ! 出力ディレクトリパス
     logical :: enable_profiling = .true.      ! プロファイル機能の有効化
     integer :: profiling_sample_interval = 0  ! サンプリング計測間隔 (0=サンプリングなし、N=Nステップごとに有効化)
@@ -445,6 +449,25 @@ program two_dimensional_dem
     call fposit_sub(rmax_particle_radius)
     call inmat_sub
     call init_sub
+    
+    ! クーロン力ソフトニングのデフォルト値設定（未指定の場合は最大半径の5%）
+    if (coulomb_softening <= 0.0d0 .and. enable_coulomb_force) then
+        coulomb_softening = rmax_particle_radius * 0.05d0
+        write(*,*) 'クーロン力ソフトニングを自動設定: ', coulomb_softening, ' [m]'
+    end if
+    
+    ! クーロン力パラメータの表示
+    if (enable_coulomb_force) then
+        write(*,*) '=== クーロン力設定 ==='
+        write(*,*) 'カットオフ半径: ', coulomb_cutoff, ' [m]'
+        write(*,*) 'ソフトニング δ: ', coulomb_softening, ' [m]'
+        write(*,*) 'シフトドフォース: ', coulomb_shift_force
+        write(*,*) 'セル法使用: ', coulomb_use_cell
+        write(*,*) '======================'
+        
+        ! 初期状態で新旧実装の検証を実行（デバッグ用）
+        ! call verify_coulomb_implementations()
+    end if
 
     current_time = 0.0d0
     leapfrog_initialized = .false.
@@ -516,9 +539,13 @@ program two_dimensional_dem
 
             call profiler_stop('neighbor_search_contact', neighbor_block_token)
             
-            ! クーロン力の計算
+            ! クーロン力の計算（セル法 or 全対全を選択）
             call profiler_start('coulomb_force', coulomb_token)
-            call coulomb_force_sub()
+            if (coulomb_use_cell) then
+                call coulomb_force_cell_cutoff_sub()
+            else
+                call coulomb_force_sub_full_pairs()
+            end if
             call profiler_stop('coulomb_force', coulomb_token)
             
             call profiler_start('integrate_leapfrog', integrate_token)
@@ -556,9 +583,13 @@ program two_dimensional_dem
 
             call profiler_stop('neighbor_search_contact', neighbor_block_token)
             
-            ! クーロン力の計算
+            ! クーロン力の計算（セル法 or 全対全を選択）
             call profiler_start('coulomb_force', coulomb_token)
-            call coulomb_force_sub()
+            if (coulomb_use_cell) then
+                call coulomb_force_cell_cutoff_sub()
+            else
+                call coulomb_force_sub_full_pairs()
+            end if
             call profiler_stop('coulomb_force', coulomb_token)
             
             ! フェーズ2: 速度更新（新しい位置での力を使用）
@@ -894,6 +925,10 @@ contains
         enable_coulomb_force = .false.
         coulomb_constant = 8.99d9  ! クーロン定数 k = 1/(4πε₀) [N⋅m²/C²]
         default_charge = 0.0d0      ! デフォルト電荷 [C]
+        coulomb_cutoff = 0.1d0      ! カットオフ半径 [m]（0でカットオフなし）
+        coulomb_softening = 0.0d0   ! ソフトニング δ [m]（後で平均半径の5%をデフォルトに設定）
+        coulomb_shift_force = .true. ! シフトドフォース（カットオフで力連続）
+        coulomb_use_cell = .true.   ! セル法使用（false=旧来の全対全）
         enable_profiling = .true.
         
         do
@@ -985,6 +1020,18 @@ contains
                 case ('DEFAULT_CHARGE')
                     read(line, *, iostat=ios) keyword, value
                     if (ios == 0) default_charge = value
+                case ('COULOMB_CUTOFF')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) coulomb_cutoff = value
+                case ('COULOMB_SOFTENING')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) coulomb_softening = value
+                case ('COULOMB_SHIFT_FORCE')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) coulomb_shift_force = (int(value) == 1)
+                case ('COULOMB_USE_CELL')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) coulomb_use_cell = (int(value) == 1)
                 case ('OUTPUT_INTERVAL')
                     read(line, *, iostat=ios) keyword, value
                     if (ios == 0) output_interval = int(value)
@@ -2001,6 +2048,365 @@ contains
         end do
         !$omp end parallel do
     end subroutine coulomb_force_sub
+
+    !> セル法＋カットオフを用いたクーロン力計算サブルーチン（O(N・近傍)）
+    !> 既存のセル構造（cell_head, particle_cell_next）を流用し、
+    !> カットオフ半径rc以内の粒子ペアのみを計算する。
+    subroutine coulomb_force_cell_cutoff_sub
+        use simulation_parameters_mod, only: coulomb_constant, enable_coulomb_force, &
+            coulomb_cutoff, coulomb_softening, coulomb_shift_force
+        use particle_data_mod
+        use cell_system_mod
+        implicit none
+        
+        integer :: i, j
+        integer :: ix, iz, ix2, iz2, dxc, dzc
+        integer :: cell0, cell1, nspan
+        real(8) :: dx, dz, dist_sq, r_eff_sq, r_eff_cubed
+        real(8) :: force_factor, fx, fz
+        real(8) :: qi, qj
+        real(8) :: rc, rc_sq, rc_cubed, delta_sq
+        real(8), parameter :: eps_charge = 1.0d-20
+        
+        ! クーロン力が無効化されている場合は何もしない
+        if (.not. enable_coulomb_force) return
+        
+        rc = coulomb_cutoff
+        rc_sq = rc * rc
+        rc_cubed = rc * rc_sq
+        delta_sq = coulomb_softening * coulomb_softening
+        
+        ! カットオフが0以下の場合は旧実装（全対全）にフォールバック
+        if (rc <= 0.0d0) then
+            call coulomb_force_sub_full_pairs()
+            return
+        end if
+        
+        ! 近傍セルの範囲を決定: nspan = ceil(rc / cell_size)
+        ! セルサイズが0以下の場合は安全のため1に設定
+        if (cell_size > 0.0d0) then
+            nspan = ceiling(rc / cell_size)
+        else
+            nspan = 1
+        end if
+        
+        ! セル走査によるクーロン力計算
+        ! 二重カウントを避けるため、同一セル内は j=next(i)、
+        ! 異なるセルは「前方向のみ」（dzc>0, または dzc==0 かつ dxc>0）を走査
+        !$omp parallel do collapse(2) schedule(dynamic) &
+        !$omp private(ix, iz, cell0, i, j, qi, qj, dx, dz, dist_sq, r_eff_sq, r_eff_cubed, force_factor, fx, fz, dxc, dzc, ix2, iz2, cell1)
+        do iz = 0, cells_z_dir - 1
+            do ix = 0, cells_x_dir - 1
+                cell0 = iz * cells_x_dir + ix + 1
+                
+                ! === 同一セル内ペア ===
+                i = cell_head(cell0)
+                do while (i > 0)
+                    qi = charge(i)
+                    if (abs(qi) < eps_charge) then
+                        i = particle_cell_next(i)
+                        cycle
+                    end if
+                    
+                    ! j = next(i) から開始（i < j を保証）
+                    j = particle_cell_next(i)
+                    do while (j > 0)
+                        qj = charge(j)
+                        if (abs(qj) < eps_charge) then
+                            j = particle_cell_next(j)
+                            cycle
+                        end if
+                        
+                        ! 距離計算
+                        dx = x_coord(j) - x_coord(i)
+                        dz = z_coord(j) - z_coord(i)
+                        dist_sq = dx*dx + dz*dz
+                        
+                        ! カットオフ判定
+                        if (dist_sq < rc_sq) then
+                            ! ソフトニング: r_eff^2 = r^2 + δ^2
+                            r_eff_sq = dist_sq + delta_sq
+                            r_eff_cubed = r_eff_sq * sqrt(r_eff_sq)
+                            
+                            ! シフトドフォース: F = k*qi*qj*r_vec*(1/r_eff^3 - 1/rc^3)
+                            if (coulomb_shift_force) then
+                                force_factor = coulomb_constant * qi * qj * (1.0d0/r_eff_cubed - 1.0d0/rc_cubed)
+                            else
+                                force_factor = coulomb_constant * qi * qj / r_eff_cubed
+                            end if
+                            
+                            fx = force_factor * dx
+                            fz = force_factor * dz
+                            
+                            ! 粒子iに力を加算（反発力なので -dx 方向）
+                            !$omp atomic
+                            x_force_sum(i) = x_force_sum(i) - fx
+                            !$omp atomic
+                            z_force_sum(i) = z_force_sum(i) - fz
+                            
+                            ! 粒子jに反作用力を加算（+dx 方向）
+                            !$omp atomic
+                            x_force_sum(j) = x_force_sum(j) + fx
+                            !$omp atomic
+                            z_force_sum(j) = z_force_sum(j) + fz
+                        end if
+                        
+                        j = particle_cell_next(j)
+                    end do
+                    
+                    i = particle_cell_next(i)
+                end do
+                
+                ! === 前方向の近傍セル ===
+                ! dzc > 0, または dzc == 0 かつ dxc > 0 のセルのみ走査
+                do dzc = 0, nspan
+                    do dxc = -nspan, nspan
+                        ! 前方向条件: dzc > 0, または (dzc == 0 かつ dxc > 0)
+                        if (dzc == 0 .and. dxc <= 0) cycle
+                        
+                        ix2 = ix + dxc
+                        iz2 = iz + dzc
+                        
+                        ! 境界チェック
+                        if (ix2 < 0 .or. ix2 >= cells_x_dir) cycle
+                        if (iz2 < 0 .or. iz2 >= cells_z_dir) cycle
+                        
+                        cell1 = iz2 * cells_x_dir + ix2 + 1
+                        
+                        ! cell0の全粒子 × cell1の全粒子
+                        i = cell_head(cell0)
+                        do while (i > 0)
+                            qi = charge(i)
+                            if (abs(qi) < eps_charge) then
+                                i = particle_cell_next(i)
+                                cycle
+                            end if
+                            
+                            j = cell_head(cell1)
+                            do while (j > 0)
+                                qj = charge(j)
+                                if (abs(qj) < eps_charge) then
+                                    j = particle_cell_next(j)
+                                    cycle
+                                end if
+                                
+                                ! 距離計算
+                                dx = x_coord(j) - x_coord(i)
+                                dz = z_coord(j) - z_coord(i)
+                                dist_sq = dx*dx + dz*dz
+                                
+                                ! カットオフ判定
+                                if (dist_sq < rc_sq) then
+                                    ! ソフトニング: r_eff^2 = r^2 + δ^2
+                                    r_eff_sq = dist_sq + delta_sq
+                                    r_eff_cubed = r_eff_sq * sqrt(r_eff_sq)
+                                    
+                                    ! シフトドフォース
+                                    if (coulomb_shift_force) then
+                                        force_factor = coulomb_constant * qi * qj * (1.0d0/r_eff_cubed - 1.0d0/rc_cubed)
+                                    else
+                                        force_factor = coulomb_constant * qi * qj / r_eff_cubed
+                                    end if
+                                    
+                                    fx = force_factor * dx
+                                    fz = force_factor * dz
+                                    
+                                    ! 粒子iに力を加算
+                                    !$omp atomic
+                                    x_force_sum(i) = x_force_sum(i) - fx
+                                    !$omp atomic
+                                    z_force_sum(i) = z_force_sum(i) - fz
+                                    
+                                    ! 粒子jに反作用力を加算
+                                    !$omp atomic
+                                    x_force_sum(j) = x_force_sum(j) + fx
+                                    !$omp atomic
+                                    z_force_sum(j) = z_force_sum(j) + fz
+                                end if
+                                
+                                j = particle_cell_next(j)
+                            end do
+                            
+                            i = particle_cell_next(i)
+                        end do
+                    end do
+                end do
+                
+            end do
+        end do
+        !$omp end parallel do
+        
+    end subroutine coulomb_force_cell_cutoff_sub
+    
+    !> 全ペア計算版クーロン力（カットオフなし、セル法なし）
+    !> coulomb_use_cell=false または coulomb_cutoff<=0 の場合に使用
+    subroutine coulomb_force_sub_full_pairs
+        use simulation_parameters_mod, only: coulomb_constant, enable_coulomb_force, &
+            coulomb_softening, coulomb_shift_force, coulomb_cutoff
+        use particle_data_mod
+        use cell_system_mod, only: num_particles
+        implicit none
+        
+        integer :: i, j
+        real(8) :: dx, dz, dist_sq, r_eff_sq, r_eff_cubed
+        real(8) :: force_factor, fx, fz
+        real(8) :: qi, qj
+        real(8) :: delta_sq, rc, rc_sq, rc_cubed
+        real(8), parameter :: eps_charge = 1.0d-20
+        real(8), parameter :: eps_dist = 1.0d-20
+        
+        if (.not. enable_coulomb_force) return
+        
+        delta_sq = coulomb_softening * coulomb_softening
+        rc = coulomb_cutoff
+        rc_sq = rc * rc
+        rc_cubed = rc * rc_sq
+        
+        ! 全粒子ペアについてクーロン力を計算
+        !$omp parallel do schedule(dynamic) private(i, j, qi, qj, dx, dz, dist_sq, r_eff_sq, r_eff_cubed, force_factor, fx, fz)
+        do i = 1, num_particles - 1
+            qi = charge(i)
+            if (abs(qi) < eps_charge) cycle
+            
+            do j = i + 1, num_particles
+                qj = charge(j)
+                if (abs(qj) < eps_charge) cycle
+                
+                dx = x_coord(j) - x_coord(i)
+                dz = z_coord(j) - z_coord(i)
+                dist_sq = dx*dx + dz*dz
+                
+                ! カットオフ判定（rc > 0 の場合のみ）
+                if (rc > 0.0d0 .and. dist_sq >= rc_sq) cycle
+                
+                ! ゼロ除算回避
+                if (dist_sq < eps_dist) cycle
+                
+                ! ソフトニング: r_eff^2 = r^2 + δ^2
+                r_eff_sq = dist_sq + delta_sq
+                r_eff_cubed = r_eff_sq * sqrt(r_eff_sq)
+                
+                ! シフトドフォース
+                if (coulomb_shift_force .and. rc > 0.0d0) then
+                    force_factor = coulomb_constant * qi * qj * (1.0d0/r_eff_cubed - 1.0d0/rc_cubed)
+                else
+                    force_factor = coulomb_constant * qi * qj / r_eff_cubed
+                end if
+                
+                fx = force_factor * dx
+                fz = force_factor * dz
+                
+                !$omp atomic
+                x_force_sum(i) = x_force_sum(i) - fx
+                !$omp atomic
+                z_force_sum(i) = z_force_sum(i) - fz
+                
+                !$omp atomic
+                x_force_sum(j) = x_force_sum(j) + fx
+                !$omp atomic
+                z_force_sum(j) = z_force_sum(j) + fz
+            end do
+        end do
+        !$omp end parallel do
+        
+    end subroutine coulomb_force_sub_full_pairs
+    
+    !> クーロン力計算の新旧実装を比較する検証サブルーチン
+    !> 大きなカットオフで両者の力が一致するか確認する
+    subroutine verify_coulomb_implementations
+        use simulation_parameters_mod, only: coulomb_constant, enable_coulomb_force, &
+            coulomb_cutoff, coulomb_softening, coulomb_shift_force, coulomb_use_cell
+        use particle_data_mod
+        use cell_system_mod
+        implicit none
+        
+        real(8), allocatable :: fx_cell(:), fz_cell(:)
+        real(8), allocatable :: fx_full(:), fz_full(:)
+        real(8) :: max_diff_x, max_diff_z, total_diff
+        real(8) :: saved_cutoff
+        logical :: saved_use_cell, saved_shift
+        integer :: i
+        
+        if (.not. enable_coulomb_force) then
+            write(*,*) '[検証] クーロン力が無効のため検証スキップ'
+            return
+        end if
+        
+        if (num_particles <= 0) return
+        
+        allocate(fx_cell(num_particles), fz_cell(num_particles))
+        allocate(fx_full(num_particles), fz_full(num_particles))
+        
+        ! 現在の設定を保存
+        saved_cutoff = coulomb_cutoff
+        saved_use_cell = coulomb_use_cell
+        saved_shift = coulomb_shift_force
+        
+        ! 力をクリアして保存
+        do i = 1, num_particles
+            x_force_sum(i) = 0.0d0
+            z_force_sum(i) = 0.0d0
+        end do
+        
+        ! セル法で計算（大きなカットオフを設定）
+        coulomb_cutoff = 1000.0d0  ! 十分大きいカットオフ
+        coulomb_shift_force = .false.  ! 比較のためシフトドフォースを無効化
+        call coulomb_force_cell_cutoff_sub()
+        
+        do i = 1, num_particles
+            fx_cell(i) = x_force_sum(i)
+            fz_cell(i) = z_force_sum(i)
+            x_force_sum(i) = 0.0d0
+            z_force_sum(i) = 0.0d0
+        end do
+        
+        ! 全対全で計算
+        coulomb_use_cell = .false.
+        call coulomb_force_sub_full_pairs()
+        
+        do i = 1, num_particles
+            fx_full(i) = x_force_sum(i)
+            fz_full(i) = z_force_sum(i)
+        end do
+        
+        ! 設定を復元
+        coulomb_cutoff = saved_cutoff
+        coulomb_use_cell = saved_use_cell
+        coulomb_shift_force = saved_shift
+        
+        ! 差分を計算
+        max_diff_x = 0.0d0
+        max_diff_z = 0.0d0
+        total_diff = 0.0d0
+        
+        do i = 1, num_particles
+            max_diff_x = max(max_diff_x, abs(fx_cell(i) - fx_full(i)))
+            max_diff_z = max(max_diff_z, abs(fz_cell(i) - fz_full(i)))
+            total_diff = total_diff + abs(fx_cell(i) - fx_full(i)) + abs(fz_cell(i) - fz_full(i))
+        end do
+        
+        write(*,*) '=== クーロン力実装検証 ==='
+        write(*,*) '粒子数: ', num_particles
+        write(*,*) 'セル法 vs 全対全 最大差(X): ', max_diff_x
+        write(*,*) 'セル法 vs 全対全 最大差(Z): ', max_diff_z
+        write(*,*) '総差分: ', total_diff
+        
+        if (max_diff_x < 1.0d-10 .and. max_diff_z < 1.0d-10) then
+            write(*,*) '[OK] 新旧実装の力が一致しています'
+        else
+            write(*,*) '[警告] 新旧実装に差異があります（許容範囲を確認してください）'
+        end if
+        write(*,*) '=========================='
+        
+        ! 力をクリア（検証後に再計算されるため）
+        do i = 1, num_particles
+            x_force_sum(i) = 0.0d0
+            z_force_sum(i) = 0.0d0
+        end do
+        
+        deallocate(fx_cell, fz_cell, fx_full, fz_full)
+        
+    end subroutine verify_coulomb_implementations
 
     !> 蛙飛び法による粒子の位置と速度を更新するサブルーチン
     subroutine nposit_leapfrog_sub(judge_static, phase)
