@@ -57,6 +57,7 @@ module simulation_parameters_mod
     real(8) :: default_charge                 ! デフォルトの粒子電荷 [C]
     logical :: enable_coulomb_force           ! クーロン力の有効化フラグ
     real(8) :: coulomb_cutoff = 0.1d0         ! クーロン力カットオフ半径 [m] (0=カットオフなし)
+    real(8) :: coulomb_cutoff_radius_mult = 0.0d0  ! カットオフを平均半径の倍数で指定 (0=絶対値使用)
     real(8) :: coulomb_softening = 0.0d0      ! ソフトニングパラメータ δ [m] (発散回避用)
     logical :: coulomb_shift_force = .true.   ! シフトドフォースを使用するか（カットオフで力を連続に）
     logical :: coulomb_use_cell = .true.      ! セル法を使用するか（false=旧来の全対全計算）
@@ -79,6 +80,24 @@ module simulation_parameters_mod
     real(8) :: charge_uniform_max = 1.0d-9                   ! 一様分布の最大値 [C]
     real(8) :: charge_normal_mean = 1.0d-9                   ! 正規分布の平均値 [C]
     real(8) :: charge_normal_std = 0.2d-9                    ! 正規分布の標準偏差 [C]
+    
+    ! 指数分布パラメータ
+    real(8) :: radius_exponential_mean = 0.0075d0            ! 指数分布の平均値 [m]
+    real(8) :: charge_exponential_mean = 1.0d-9              ! 指数分布の平均値 [C]
+    
+    ! 二峰性分布パラメータ（半径）
+    real(8) :: radius_bimodal_mean1 = 0.005d0                ! 第1ピークの平均値 [m]
+    real(8) :: radius_bimodal_std1 = 0.001d0                 ! 第1ピークの標準偏差 [m]
+    real(8) :: radius_bimodal_mean2 = 0.010d0                ! 第2ピークの平均値 [m]
+    real(8) :: radius_bimodal_std2 = 0.001d0                 ! 第2ピークの標準偏差 [m]
+    real(8) :: radius_bimodal_ratio = 0.5d0                  ! 第1ピークの割合 [-]
+    
+    ! 二峰性分布パラメータ（電荷）
+    real(8) :: charge_bimodal_mean1 = 1.0d-9                 ! 第1ピークの平均値 [C]
+    real(8) :: charge_bimodal_std1 = 0.2d-9                  ! 第1ピークの標準偏差 [C]
+    real(8) :: charge_bimodal_mean2 = -1.0d-9                ! 第2ピークの平均値 [C]
+    real(8) :: charge_bimodal_std2 = 0.2d-9                  ! 第2ピークの標準偏差 [C]
+    real(8) :: charge_bimodal_ratio = 0.5d0                  ! 第1ピークの割合 [-]
     
     ! 壁引き抜きパラメータ
     logical :: enable_wall_withdraw = .false.                ! 壁引き抜きの有効化
@@ -454,6 +473,21 @@ program two_dimensional_dem
     if (coulomb_softening <= 0.0d0 .and. enable_coulomb_force) then
         coulomb_softening = rmax_particle_radius * 0.05d0
         write(*,*) 'クーロン力ソフトニングを自動設定: ', coulomb_softening, ' [m]'
+    end if
+    
+    ! クーロン力カットオフの倍数指定からの計算（平均半径を使用）
+    if (coulomb_cutoff_radius_mult > 0.0d0 .and. enable_coulomb_force) then
+        block
+            real(8) :: mean_radius
+            if (num_particles > 0) then
+                mean_radius = sum(radius(1:num_particles)) / real(num_particles, 8)
+            else
+                mean_radius = (particle_radius_large + particle_radius_small) / 2.0d0
+            end if
+            coulomb_cutoff = mean_radius * coulomb_cutoff_radius_mult
+            write(*,*) '平均半径: ', mean_radius, ' [m]'
+            write(*,*) 'カットオフを平均半径の', coulomb_cutoff_radius_mult, '倍に設定: ', coulomb_cutoff, ' [m]'
+        end block
     end if
     
     ! クーロン力パラメータの表示
@@ -926,6 +960,7 @@ contains
         coulomb_constant = 8.99d9  ! クーロン定数 k = 1/(4πε₀) [N⋅m²/C²]
         default_charge = 0.0d0      ! デフォルト電荷 [C]
         coulomb_cutoff = 0.1d0      ! カットオフ半径 [m]（0でカットオフなし）
+        coulomb_cutoff_radius_mult = 0.0d0  ! カットオフを半径の倍数で指定（0=絶対値使用）
         coulomb_softening = 0.0d0   ! ソフトニング δ [m]（後で平均半径の5%をデフォルトに設定）
         coulomb_shift_force = .true. ! シフトドフォース（カットオフで力連続）
         coulomb_use_cell = .true.   ! セル法使用（false=旧来の全対全）
@@ -1023,6 +1058,9 @@ contains
                 case ('COULOMB_CUTOFF')
                     read(line, *, iostat=ios) keyword, value
                     if (ios == 0) coulomb_cutoff = value
+                case ('COULOMB_CUTOFF_RADIUS_MULT')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) coulomb_cutoff_radius_mult = value
                 case ('COULOMB_SOFTENING')
                     read(line, *, iostat=ios) keyword, value
                     if (ios == 0) coulomb_softening = value
@@ -1059,6 +1097,24 @@ contains
                 case ('RADIUS_NORMAL_STD')
                     read(line, *, iostat=ios) keyword, value
                     if (ios == 0) radius_normal_std = value
+                case ('RADIUS_EXPONENTIAL_MEAN')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) radius_exponential_mean = value
+                case ('RADIUS_BIMODAL_MEAN1')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) radius_bimodal_mean1 = value
+                case ('RADIUS_BIMODAL_STD1')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) radius_bimodal_std1 = value
+                case ('RADIUS_BIMODAL_MEAN2')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) radius_bimodal_mean2 = value
+                case ('RADIUS_BIMODAL_STD2')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) radius_bimodal_std2 = value
+                case ('RADIUS_BIMODAL_RATIO')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) radius_bimodal_ratio = value
                 
                 ! 電荷分布パラメータ
                 case ('CHARGE_DISTRIBUTION_TYPE')
@@ -1077,6 +1133,24 @@ contains
                 case ('CHARGE_NORMAL_STD')
                     read(line, *, iostat=ios) keyword, value
                     if (ios == 0) charge_normal_std = value
+                case ('CHARGE_EXPONENTIAL_MEAN')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) charge_exponential_mean = value
+                case ('CHARGE_BIMODAL_MEAN1')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) charge_bimodal_mean1 = value
+                case ('CHARGE_BIMODAL_STD1')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) charge_bimodal_std1 = value
+                case ('CHARGE_BIMODAL_MEAN2')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) charge_bimodal_mean2 = value
+                case ('CHARGE_BIMODAL_STD2')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) charge_bimodal_std2 = value
+                case ('CHARGE_BIMODAL_RATIO')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) charge_bimodal_ratio = value
                 
                 ! 壁引き抜きパラメータ
                 case ('ENABLE_WALL_WITHDRAW')
@@ -1241,6 +1315,14 @@ contains
         integer :: radius_list_count, charge_list_count
         real(8) :: generated_radius, generated_charge
         integer :: radius_list_idx, charge_list_idx
+        
+        ! 衝突チェック付き配置用変数
+        real(8) :: r_avg                          ! 平均半径
+        real(8) :: x_candidate, z_candidate       ! 候補位置
+        logical :: placement_success              ! 配置成功フラグ
+        integer :: retry_count, max_retry         ! リトライカウンタ
+        integer :: collision_skip_count           ! 衝突スキップカウント
+        logical :: has_collision                  ! 衝突フラグ
 
         call profiler_start('fposit_sub', prof_token)
         r1_val = particle_radius_large
@@ -1334,12 +1416,28 @@ contains
                     ! 正規分布の場合、3σ範囲を考慮
                     rmax_out = radius_normal_mean + 3.0d0 * radius_normal_std
                     rmin_val = max(1.0d-6, radius_normal_mean - 3.0d0 * radius_normal_std)
+                case ('lognormal')
+                    ! 対数正規分布の場合、3σ範囲を考慮
+                    rmax_out = radius_normal_mean + 3.0d0 * radius_normal_std
+                    rmin_val = max(1.0d-6, radius_normal_mean - 3.0d0 * radius_normal_std)
+                case ('exponential')
+                    ! 指数分布の場合、5倍の平均値を上限とする
+                    rmax_out = radius_exponential_mean * 5.0d0
+                    rmin_val = 1.0d-6
+                case ('bimodal')
+                    ! 二峰性分布の場合、両ピークの3σ範囲を考慮
+                    rmax_out = max(radius_bimodal_mean1 + 3.0d0 * radius_bimodal_std1, &
+                                   radius_bimodal_mean2 + 3.0d0 * radius_bimodal_std2)
+                    rmin_val = max(1.0d-6, min(radius_bimodal_mean1 - 3.0d0 * radius_bimodal_std1, &
+                                               radius_bimodal_mean2 - 3.0d0 * radius_bimodal_std2))
                 case default
                     rmax_out = r1_val
                     rmin_val = r2_val
             end select
             
-            rn_val = rmax_out + 1.0d-5    ! パッキングのための有効半径
+            ! 平均半径を使用してより密な格子を作成
+            r_avg = (rmax_out + rmin_val) / 2.0d0
+            rn_val = r_avg + 1.0d-5    ! パッキングのための有効半径（平均半径ベース）
             
             ! 壁引き抜きが有効かつ引き抜き対象の斜面壁が指定されている場合、
             ! 粒子配置のx範囲を壁のx座標までに制限
@@ -1371,7 +1469,15 @@ contains
                 particle_gen_layers = max_layers_for_range
             end if
             
+            write(*,*) '衝突チェック付き粒子配置モード'
+            write(*,*) '  平均半径: ', r_avg, ' m'
+            write(*,*) '  最大半径: ', rmax_out, ' m'
+            write(*,*) '  最小半径: ', rmin_val, ' m'
+            
             current_particle_count = 0
+            collision_skip_count = 0
+            max_retry = 10  ! 位置調整の最大リトライ回数
+            
             do i_layer = 1, particle_gen_layers
                 if (mod(i_layer, 2) == 0) then  ! 偶数層
                     dx_offset = 2.0d0 * rn_val
@@ -1383,49 +1489,93 @@ contains
                 do j_particle_in_layer = 1, particles_this_row
                     call custom_random(random_seed, random_uniform_val)
                     if (random_uniform_val < 2.0d-1) cycle ! 一部の位置をスキップ
+                    
+                    ! === 先に半径を決定 ===
+                    select case (trim(radius_distribution_type))
+                        case ('fixed')
+                            call custom_random(random_seed, random_uniform_val)
+                            if (random_uniform_val < 0.5d0) then
+                                generated_radius = r1_val
+                            else
+                                generated_radius = r2_val
+                            end if
+                        case ('file')
+                            radius_list_idx = radius_list_idx + 1
+                            if (radius_list_idx > radius_list_count) then
+                                write(*,*) '警告: 半径リストの粒子数が不足しています。配置を打ち切ります。'
+                                write(*,*) '  半径リスト数: ', radius_list_count, ', 配置試行数: ', radius_list_idx
+                                goto 100
+                            end if
+                            generated_radius = radius_list(radius_list_idx)
+                        case ('uniform')
+                            call generate_uniform_random(random_seed, radius_uniform_min, radius_uniform_max, generated_radius)
+                        case ('normal')
+                            call generate_normal_random(random_seed, radius_normal_mean, radius_normal_std, generated_radius)
+                            if (generated_radius < 1.0d-6) generated_radius = 1.0d-6
+                        case ('lognormal')
+                            call generate_lognormal_random(random_seed, radius_normal_mean, radius_normal_std, generated_radius)
+                            if (generated_radius < 1.0d-6) generated_radius = 1.0d-6
+                        case ('exponential')
+                            call generate_exponential_random(random_seed, radius_exponential_mean, generated_radius)
+                            if (generated_radius < 1.0d-6) generated_radius = 1.0d-6
+                        case ('bimodal')
+                            call generate_bimodal_random(random_seed, radius_bimodal_mean1, radius_bimodal_std1, &
+                                                        radius_bimodal_mean2, radius_bimodal_std2, &
+                                                        radius_bimodal_ratio, generated_radius)
+                            if (generated_radius < 1.0d-6) generated_radius = 1.0d-6
+                        case default
+                            generated_radius = r1_val
+                    end select
+                    
+                    ! === 候補位置を計算 ===
+                    x_candidate = 2.0d0 * rn_val * (j_particle_in_layer - 1) + dx_offset
+                    z_candidate = z_min_target + 2.0d0 * rn_val * (i_layer - 1) + rn_val
+                    
+                    ! === 衝突チェック付き配置 ===
+                    placement_success = .false.
+                    do retry_count = 0, max_retry
+                        ! 衝突チェック
+                        call check_particle_collision_sub(x_candidate, z_candidate, generated_radius, &
+                                                         current_particle_count, has_collision)
+                        if (.not. has_collision) then
+                            placement_success = .true.
+                            exit
+                        end if
+                        
+                        ! 衝突があった場合、位置を微調整
+                        if (retry_count < max_retry) then
+                            call custom_random(random_seed, random_uniform_val)
+                            x_candidate = x_candidate + (random_uniform_val - 0.5d0) * generated_radius
+                            call custom_random(random_seed, random_uniform_val)
+                            z_candidate = z_candidate + (random_uniform_val - 0.5d0) * generated_radius
+                            
+                            ! 境界チェック
+                            if (x_candidate < generated_radius) x_candidate = generated_radius
+                            if (x_candidate > effective_container_width - generated_radius) &
+                                x_candidate = effective_container_width - generated_radius
+                            if (z_candidate < z_min_target + generated_radius) &
+                                z_candidate = z_min_target + generated_radius
+                        end if
+                    end do
+                    
+                    ! 配置失敗の場合はスキップ
+                    if (.not. placement_success) then
+                        collision_skip_count = collision_skip_count + 1
+                        cycle
+                    end if
+                    
+                    ! === 粒子を配置 ===
                     current_particle_count = current_particle_count + 1
                     if (current_particle_count > ni_max) then
                         write(*,*) '粒子数がni_maxを超えました: ', ni_max
                         stop 'fposit_sub: 粒子が多すぎます'
                     end if
-                    num_particles = current_particle_count ! グローバルな粒子数を更新
-                    x_coord(num_particles) = 2.0d0 * rn_val * (j_particle_in_layer - 1) + dx_offset
-                    ! z座標を0.3でオフセット
-                    z_coord(num_particles) = z_min_target + 2.0d0 * rn_val * (i_layer - 1) + rn_val
-                    rotation_angle(num_particles) = 0.0d0 ! 回転角を初期化
-                    
-                    ! 半径の割り当て（分布タイプに応じて）
-                    select case (trim(radius_distribution_type))
-                        case ('fixed')
-                            call custom_random(random_seed, random_uniform_val)
-                            if (random_uniform_val < 0.5d0) then
-                                radius(num_particles) = r1_val
-                            else
-                                radius(num_particles) = r2_val
-                            end if
-                        case ('file')
-                            radius_list_idx = radius_list_idx + 1
-                            if (radius_list_idx > radius_list_count) then
-                                ! 半径リストが不足した場合、配置を打ち切る（循環使用しない）
-                                write(*,*) '警告: 半径リストの粒子数が不足しています。配置を打ち切ります。'
-                                write(*,*) '  半径リスト数: ', radius_list_count, ', 配置試行数: ', radius_list_idx
-                                num_particles = num_particles - 1  ! 現在の粒子をキャンセル
-                                current_particle_count = current_particle_count - 1
-                                goto 100  ! 粒子配置ループを抜ける
-                            end if
-                            radius(num_particles) = radius_list(radius_list_idx)
-                        case ('uniform')
-                            call generate_uniform_random(random_seed, radius_uniform_min, radius_uniform_max, generated_radius)
-                            radius(num_particles) = generated_radius
-                        case ('normal')
-                            call generate_normal_random(random_seed, radius_normal_mean, radius_normal_std, generated_radius)
-                            ! 負の半径を防止
-                            if (generated_radius < 1.0d-6) generated_radius = 1.0d-6
-                            radius(num_particles) = generated_radius
-                        case default
-                            radius(num_particles) = r1_val
-                    end select
-                    
+                    num_particles = current_particle_count
+                    x_coord(num_particles) = x_candidate
+                    z_coord(num_particles) = z_candidate
+                    rotation_angle(num_particles) = 0.0d0
+                    radius(num_particles) = generated_radius
+
                     ! 電荷の割り当て（分布タイプに応じて）
                     select case (trim(charge_distribution_type))
                         case ('fixed')
@@ -1433,7 +1583,6 @@ contains
                         case ('file')
                             charge_list_idx = charge_list_idx + 1
                             if (charge_list_idx > charge_list_count) then
-                                ! リストを循環使用
                                 charge_list_idx = mod(charge_list_idx - 1, charge_list_count) + 1
                             end if
                             charge(num_particles) = charge_list(charge_list_idx)
@@ -1443,12 +1592,27 @@ contains
                         case ('normal')
                             call generate_normal_random(random_seed, charge_normal_mean, charge_normal_std, generated_charge)
                             charge(num_particles) = generated_charge
+                        case ('lognormal')
+                            call generate_lognormal_random(random_seed, charge_normal_mean, charge_normal_std, generated_charge)
+                            charge(num_particles) = generated_charge
+                        case ('exponential')
+                            call generate_exponential_random(random_seed, charge_exponential_mean, generated_charge)
+                            charge(num_particles) = generated_charge
+                        case ('bimodal')
+                            call generate_bimodal_random(random_seed, charge_bimodal_mean1, charge_bimodal_std1, &
+                                                        charge_bimodal_mean2, charge_bimodal_std2, &
+                                                        charge_bimodal_ratio, generated_charge)
+                            charge(num_particles) = generated_charge
                         case default
                             charge(num_particles) = default_charge
                     end select
                 end do
             end do
 100         continue  ! 半径リスト不足時のジャンプ先
+            
+            if (collision_skip_count > 0) then
+                write(*,*) '衝突により配置をスキップした粒子数: ', collision_skip_count
+            end if
             
             ! 半径リスト数 > 配置可能数の警告
             if (trim(radius_distribution_type) == 'file' .and. radius_list_count > 0) then
@@ -2937,5 +3101,114 @@ contains
         z = sqrt(-2.0d0 * log(u1)) * cos(2.0d0 * PI_VAL * u2)
         result_out = mean_val + std_val * z
     end subroutine generate_normal_random
+
+    !> 対数正規分布から乱数を生成するサブルーチン
+    !! mean_val: 対数正規分布の平均（元スケール）
+    !! std_val: 対数正規分布の標準偏差（元スケール）
+    subroutine generate_lognormal_random(seed_io, mean_val, std_val, result_out)
+        use simulation_constants_mod, only: PI_VAL
+        implicit none
+        integer, intent(inout) :: seed_io
+        real(8), intent(in) :: mean_val, std_val
+        real(8), intent(out) :: result_out
+        real(8) :: u1, u2, z, mu_ln, sigma_ln, cv_sq
+        
+        ! 変動係数の二乗
+        cv_sq = (std_val / mean_val) ** 2
+        
+        ! 対数正規分布のパラメータに変換
+        ! μ_ln = ln(mean) - 0.5 * ln(1 + (std/mean)^2)
+        ! σ_ln = sqrt(ln(1 + (std/mean)^2))
+        sigma_ln = sqrt(log(1.0d0 + cv_sq))
+        mu_ln = log(mean_val) - 0.5d0 * sigma_ln * sigma_ln
+        
+        ! Box-Muller変換で標準正規分布を生成
+        call custom_random(seed_io, u1)
+        call custom_random(seed_io, u2)
+        if (u1 < 1.0d-10) u1 = 1.0d-10
+        
+        z = sqrt(-2.0d0 * log(u1)) * cos(2.0d0 * PI_VAL * u2)
+        
+        ! 対数正規分布に変換
+        result_out = exp(mu_ln + sigma_ln * z)
+    end subroutine generate_lognormal_random
+
+    !> 指数分布から乱数を生成するサブルーチン（逆関数法）
+    !! mean_val: 指数分布の平均（= 1/λ）
+    subroutine generate_exponential_random(seed_io, mean_val, result_out)
+        implicit none
+        integer, intent(inout) :: seed_io
+        real(8), intent(in) :: mean_val
+        real(8), intent(out) :: result_out
+        real(8) :: u
+        
+        call custom_random(seed_io, u)
+        
+        ! u が 0 に非常に近い場合を回避
+        if (u < 1.0d-10) u = 1.0d-10
+        
+        ! 逆関数法: X = -mean * ln(U)
+        result_out = -mean_val * log(u)
+    end subroutine generate_exponential_random
+
+    !> 二峰性分布から乱数を生成するサブルーチン
+    !! 確率ratioで第1ピーク(mean1, std1)、それ以外で第2ピーク(mean2, std2)
+    subroutine generate_bimodal_random(seed_io, mean1, std1, mean2, std2, ratio, result_out)
+        use simulation_constants_mod, only: PI_VAL
+        implicit none
+        integer, intent(inout) :: seed_io
+        real(8), intent(in) :: mean1, std1, mean2, std2, ratio
+        real(8), intent(out) :: result_out
+        real(8) :: u, u1, u2, z, selected_mean, selected_std
+        
+        ! どちらのピークを選ぶか決定
+        call custom_random(seed_io, u)
+        
+        if (u < ratio) then
+            selected_mean = mean1
+            selected_std = std1
+        else
+            selected_mean = mean2
+            selected_std = std2
+        end if
+        
+        ! Box-Muller変換で正規分布を生成
+        call custom_random(seed_io, u1)
+        call custom_random(seed_io, u2)
+        if (u1 < 1.0d-10) u1 = 1.0d-10
+        
+        z = sqrt(-2.0d0 * log(u1)) * cos(2.0d0 * PI_VAL * u2)
+        result_out = selected_mean + selected_std * z
+    end subroutine generate_bimodal_random
+
+    !> 粒子の衝突チェックサブルーチン
+    !! 新しい粒子が既存粒子と重なっているかをチェック
+    !! x_new, z_new: 新粒子の座標
+    !! r_new: 新粒子の半径
+    !! n_existing: 既存粒子数
+    !! has_collision: 出力 .true. = 衝突あり, .false. = 衝突なし
+    subroutine check_particle_collision_sub(x_new, z_new, r_new, n_existing, has_collision)
+        use particle_data_mod, only: x_coord, z_coord, radius
+        implicit none
+        real(8), intent(in) :: x_new, z_new, r_new
+        integer, intent(in) :: n_existing
+        logical, intent(out) :: has_collision
+        integer :: i
+        real(8) :: dx, dz, dist_sq, min_dist_sq
+        
+        has_collision = .false.
+        
+        do i = 1, n_existing
+            dx = x_new - x_coord(i)
+            dz = z_new - z_coord(i)
+            dist_sq = dx * dx + dz * dz
+            min_dist_sq = (r_new + radius(i)) ** 2
+            
+            if (dist_sq < min_dist_sq) then
+                has_collision = .true.
+                return
+            end if
+        end do
+    end subroutine check_particle_collision_sub
 
 end program two_dimensional_dem
