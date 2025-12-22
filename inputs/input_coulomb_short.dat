@@ -1,0 +1,72 @@
+# PEMシミュレーション 安息角（AoR）短縮掃引用 input
+# 目的:
+#   - AUTO_WALL_WITHDRAW=1 で「充填→自動引き抜き→再静止」で終了
+#   - COULOMB_CUTOFF（rc）だけを掃引して AoR 収束の最小rcを決める
+#
+# NOTE:
+#   - particles.csv の「最終step」を AoR 解析が読むため、最終状態を必ず出力する実装と併用推奨
+#   - timing_report.csv を出すため、PROFILING_SAMPLE_INTERVAL=0（サンプリング無効）を推奨
+
+# === シミュレーション制御パラメータ ===
+TIME_STEP                   1.0e-7
+MAX_CALCULATION_STEPS       12000000
+
+# === 材料物性値 ===
+YOUNG_MODULUS_PARTICLE      4.9e9
+YOUNG_MODULUS_WALL          3.9e9
+POISSON_RATIO_PARTICLE      0.23
+POISSON_RATIO_WALL          0.25
+PARTICLE_DENSITY            2480.0
+
+# === 摩擦係数 ===
+FRICTION_COEFF_PARTICLE     0.25
+FRICTION_COEFF_WALL         0.17
+ROLLING_FRICTION_COEFF_PARTICLE    0.2
+ROLLING_FRICTION_COEFF_WALL        0.2
+
+# === 粒子生成パラメータ ===
+PARTICLE_RADIUS_LARGE       1.0e-3
+PARTICLE_RADIUS_SMALL       1.0e-3
+CONTAINER_WIDTH             2.0
+CONTAINER_HEIGHT            0.0
+PARTICLE_GEN_LAYERS         30
+RANDOM_SEED                 584287
+
+# === クーロン力（静電気力）設定 ===
+ENABLE_COULOMB_FORCE        1
+COULOMB_CONSTANT            8.99e9
+
+# 電荷分布: charges.dat（二峰性）を使用（必要ならジョブ側で差し替え）
+CHARGE_DISTRIBUTION_TYPE    file
+CHARGE_LIST_FILE            "inputs/dist_radii_study/charges.dat"
+
+# --- クーロン力高速化パラメータ ---
+# ※この値（rc）はジョブスクリプトで掃引して上書きする想定
+COULOMB_CUTOFF              0.05
+COULOMB_CUTOFF_RADIUS_MULT  0
+COULOMB_SOFTENING           0.0
+COULOMB_SHIFT_FORCE         1
+COULOMB_USE_CELL            1
+
+# === セル法アルゴリズム制御 ===
+DISABLE_CELL_ALGORITHM      0
+STOP_WHEN_STATIC            1
+
+# === 出力制御パラメータ ===
+# I/O削減のため粗め。最終状態を必ず出力する実装と併用すること。
+OUTPUT_INTERVAL             2000000
+KINETIC_ENERGY_THRESHOLD    1.0d-10
+MIN_STEPS_BEFORE_STATIC_CHECK 2000000
+
+# プロファイル（timing_report.csv を必ず出すためサンプリング無効）
+ENABLE_PROFILING            1
+PROFILING_SAMPLE_INTERVAL   0
+
+# === 壁引き抜きパラメータ ===
+ENABLE_WALL_WITHDRAW        1
+AUTO_WALL_WITHDRAW          1
+WALL_WITHDRAW_STEP          3000000
+WITHDRAW_WALL_ID            0
+WITHDRAW_SLOPED_WALL_ID     1
+
+

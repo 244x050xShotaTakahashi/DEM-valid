@@ -394,7 +394,9 @@ contains
         real(8) :: total_all, avg_time, percent_share
         real(8) :: entry_total, entry_max
 
-        if (.not. profiling_enabled) return
+        ! profiling_enabled は「計測のオン/オフ（サンプリング）」にも使われるため、
+        ! 終了時点で false でも、既に蓄積した結果は書き出せるようにする。
+        if (profile_entry_count <= 0) return
 
         total_all = 0.0d0
         do i = 1, profile_entry_count
@@ -732,6 +734,9 @@ program two_dimensional_dem
     end do
 
 200 continue ! シミュレーションループ脱出用のラベル
+
+    ! AoR解析（particles.csv の最終stepを使用）向けに、終了時の最終状態を必ず出力する
+    call gfout_sub(it_step, current_time, rmax_particle_radius)
 
     ! バックアップデータの出力
     call bfout_sub
