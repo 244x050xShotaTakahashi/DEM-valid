@@ -1,27 +1,32 @@
 #!/bin/bash
 #SBATCH -p gr20001a
-#SBATCH --rsc p=1:t=32:c=32
+#SBATCH --rsc p=1:t=64:c=64
 #SBATCH -t 168:00:00
-#SBATCH -o log/stdout.%A_%a.log
-#SBATCH -e log/stderr.%A_%a.log
+#SBATCH -o log/stdout.%A_%a.omp64.log
+#SBATCH -e log/stderr.%A_%a.omp64.log
 #SBATCH --array=1-4
 
 # ==========================================
 # AoR用: クーロンカットオフ rc 掃引（短縮ラン / AUTO_WALL_WITHDRAW）
+#   - 64スレッド（OMP_NUM_THREADS=64）版
 #
-# - inputs/input_coulomb_short.dat をベースに、COULOMB_CUTOFF だけを上書き
-# - AUTO_WALL_WITHDRAW=1: 充填静止→自動引き抜き→再静止で終了
-# - AoR解析: src/analyze_repose_angle.py（particles.csv最終stepを使用）
+# 32スレッド版: job_aor_cutoff_sweep.sh
+#
+# 出力先を分けて比較しやすくする:
+#   results/aor_cutoff_sweep_omp64/...
 #
 # 使い方:
-#   sbatch job_aor_cutoff_sweep.sh
+#   sbatch job_aor_cutoff_sweep_omp64.sh
 # ==========================================
 
 set -euo pipefail
 
 module load intel
 ulimit -s unlimited
-export OMP_NUM_THREADS=${OMP_NUM_THREADS:-32}
+
+export OMP_NUM_THREADS=64
+export OMP_PROC_BIND=${OMP_PROC_BIND:-close}
+export OMP_PLACES=${OMP_PLACES:-cores}
 
 date
 
@@ -42,9 +47,9 @@ case ${SLURM_ARRAY_TASK_ID:-1} in
 esac
 
 RUN_ID="job_${SLURM_ARRAY_JOB_ID:-local}_task_${SLURM_ARRAY_TASK_ID:-0}"
-OUTPUT_DIR="results/aor_cutoff_sweep/${CASE_NAME}/${RUN_ID}"
+OUTPUT_DIR="results/aor_cutoff_sweep_omp64/${CASE_NAME}/${RUN_ID}"
 
-TEMP_INPUT_DIR="inputs/aor_cutoff_sweep/${CASE_NAME}"
+TEMP_INPUT_DIR="inputs/aor_cutoff_sweep_omp64/${CASE_NAME}"
 TEMP_INPUT="${TEMP_INPUT_DIR}/input_${RUN_ID}.dat"
 
 mkdir -p "$OUTPUT_DIR" "$TEMP_INPUT_DIR" log
@@ -69,7 +74,7 @@ if [ -z "${CONTAINER_WIDTH}" ]; then
 fi
 
 echo "=========================================="
-echo "AoR cutoff sweep (AUTO_WALL_WITHDRAW)"
+echo "AoR cutoff sweep (AUTO_WALL_WITHDRAW) - OMP64"
 echo "=========================================="
 echo "Case Name       : $CASE_NAME"
 echo "rc [m]          : $RC"
@@ -78,6 +83,8 @@ echo "Output Dir      : $OUTPUT_DIR"
 echo "Repose Side     : $REPOSE_SIDE"
 echo "Container Width : $CONTAINER_WIDTH"
 echo "OMP Threads     : $OMP_NUM_THREADS"
+echo "OMP_PLACES      : ${OMP_PLACES}"
+echo "OMP_PROC_BIND   : ${OMP_PROC_BIND}"
 echo "=========================================="
 
 # ==========================================
@@ -86,7 +93,7 @@ echo "=========================================="
 echo ""
 echo "[Phase 1] Compiling..."
 
-BUILD_DIR="build/job_aor_cutoff_sweep/${CASE_NAME}/${RUN_ID}"
+BUILD_DIR="build/job_aor_cutoff_sweep_omp64/${CASE_NAME}/${RUN_ID}"
 mkdir -p "$BUILD_DIR"
 
 SRC_FILE="src/dem_valid.f90"
@@ -110,8 +117,8 @@ ELAPSED=$((END_TIME - START_TIME))
 echo "Simulation completed successfully."
 echo "Elapsed time: ${ELAPSED} seconds"
 
-echo "case,rc_m,elapsed_seconds" > "${OUTPUT_DIR}/timing.csv"
-echo "${CASE_NAME},${RC},${ELAPSED}" >> "${OUTPUT_DIR}/timing.csv"
+echo "case,rc_m,elapsed_seconds,omp_threads" > "${OUTPUT_DIR}/timing.csv"
+echo "${CASE_NAME},${RC},${ELAPSED},${OMP_NUM_THREADS}" >> "${OUTPUT_DIR}/timing.csv"
 
 rm -rf "$BUILD_DIR"
 cp "$TEMP_INPUT" "${OUTPUT_DIR}/input_${CASE_NAME}.dat"
@@ -140,12 +147,12 @@ fi
 
 echo ""
 echo "=========================================="
-echo "Task completed: $CASE_NAME"
+echo "Task completed: $CASE_NAME (OMP64)"
 echo "rc [m]        : $RC"
+echo "OMP Threads   : $OMP_NUM_THREADS"
 echo "Elapsed time  : ${ELAPSED} seconds"
 echo "Output Dir    : $OUTPUT_DIR"
 echo "=========================================="
 date
-
 
 

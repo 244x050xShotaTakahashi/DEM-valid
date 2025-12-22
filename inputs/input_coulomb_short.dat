@@ -9,7 +9,7 @@
 
 # === シミュレーション制御パラメータ ===
 TIME_STEP                   1.0e-7
-MAX_CALCULATION_STEPS       12000000
+MAX_CALCULATION_STEPS       20000000
 
 # === 材料物性値 ===
 YOUNG_MODULUS_PARTICLE      4.9e9
@@ -36,9 +36,14 @@ RANDOM_SEED                 584287
 ENABLE_COULOMB_FORCE        1
 COULOMB_CONSTANT            8.99e9
 
-# 電荷分布: charges.dat（二峰性）を使用（必要ならジョブ側で差し替え）
-CHARGE_DISTRIBUTION_TYPE    file
-CHARGE_LIST_FILE            "inputs/dist_radii_study/charges.dat"
+# 電荷分布: コード内生成（ファイル不要）
+# - charges.dat の「±1nC級の二峰性」を模した設定（必要なら調整）
+CHARGE_DISTRIBUTION_TYPE    bimodal
+CHARGE_BIMODAL_MEAN1        1.0e-10
+CHARGE_BIMODAL_STD1         0.2e-10
+CHARGE_BIMODAL_MEAN2       -1.0e-10
+CHARGE_BIMODAL_STD2         0.2e-10
+CHARGE_BIMODAL_RATIO        0.5
 
 # --- クーロン力高速化パラメータ ---
 # ※この値（rc）はジョブスクリプトで掃引して上書きする想定
@@ -65,8 +70,9 @@ PROFILING_SAMPLE_INTERVAL   0
 # === 壁引き抜きパラメータ ===
 ENABLE_WALL_WITHDRAW        1
 AUTO_WALL_WITHDRAW          1
-WALL_WITHDRAW_STEP          3000000
+WALL_WITHDRAW_STEP          10000000
 WITHDRAW_WALL_ID            0
 WITHDRAW_SLOPED_WALL_ID     1
+
 
 

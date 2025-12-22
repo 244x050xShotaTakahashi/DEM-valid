@@ -1382,10 +1382,16 @@ contains
         integer :: retry_count, max_retry         ! リトライカウンタ
         integer :: collision_skip_count           ! 衝突スキップカウント
         logical :: has_collision                  ! 衝突フラグ
+        integer :: seed_charge                    ! 電荷生成用の乱数シード（配置用と分離）
 
         call profiler_start('fposit_sub', prof_token)
         r1_val = particle_radius_large
         r2_val = particle_radius_small
+
+        ! 電荷生成の乱数系列を粒子配置（衝突回避リトライ等）から分離して再現性を上げる。
+        ! 同一 RANDOM_SEED のもとで決定的に生成しつつ、配置ロジック変更で電荷が変わりにくくする。
+        seed_charge = random_seed + 104729
+        if (seed_charge == 0) seed_charge = 1
         
         if (use_explicit_positions) then
             ! 明示座標ファイルから読み込み
@@ -1648,19 +1654,19 @@ contains
                             end if
                             charge(num_particles) = charge_list(charge_list_idx)
                         case ('uniform')
-                            call generate_uniform_random(random_seed, charge_uniform_min, charge_uniform_max, generated_charge)
+                            call generate_uniform_random(seed_charge, charge_uniform_min, charge_uniform_max, generated_charge)
                             charge(num_particles) = generated_charge
                         case ('normal')
-                            call generate_normal_random(random_seed, charge_normal_mean, charge_normal_std, generated_charge)
+                            call generate_normal_random(seed_charge, charge_normal_mean, charge_normal_std, generated_charge)
                             charge(num_particles) = generated_charge
                         case ('lognormal')
-                            call generate_lognormal_random(random_seed, charge_normal_mean, charge_normal_std, generated_charge)
+                            call generate_lognormal_random(seed_charge, charge_normal_mean, charge_normal_std, generated_charge)
                             charge(num_particles) = generated_charge
                         case ('exponential')
-                            call generate_exponential_random(random_seed, charge_exponential_mean, generated_charge)
+                            call generate_exponential_random(seed_charge, charge_exponential_mean, generated_charge)
                             charge(num_particles) = generated_charge
                         case ('bimodal')
-                            call generate_bimodal_random(random_seed, charge_bimodal_mean1, charge_bimodal_std1, &
+                            call generate_bimodal_random(seed_charge, charge_bimodal_mean1, charge_bimodal_std1, &
                                                         charge_bimodal_mean2, charge_bimodal_std2, &
                                                         charge_bimodal_ratio, generated_charge)
                             charge(num_particles) = generated_charge

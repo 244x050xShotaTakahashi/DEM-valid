@@ -52,7 +52,7 @@ APPLY=1 bash postprocess_cutoff_sweep.sh results/aor_cutoff_sweep inputs/input_c
 - 追加: `inputs/input_coulomb_short.dat`
 - 内容:
   - `AUTO_WALL_WITHDRAW 1`（短縮ラン）
-  - `CHARGE_DISTRIBUTION_TYPE file` + `CHARGE_LIST_FILE "inputs/dist_radii_study/charges.dat"`
+  - `CHARGE_DISTRIBUTION_TYPE bimodal`（コード内で電荷分布を生成し、ファイルを読まない）
   - `COULOMB_CUTOFF` はジョブ側で上書きして掃引
   - `PROFILING_SAMPLE_INTERVAL 0`（後述の timing_report.csv を確実に出す）
 
