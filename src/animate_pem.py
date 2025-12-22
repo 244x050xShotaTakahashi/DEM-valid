@@ -1,8 +1,9 @@
 import argparse
 import csv
+import re
 import shutil
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
@@ -11,7 +12,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Circle
 
 # 入力ファイルのデフォルトを変更 (CSV)
-DATA_FILE_DEFAULT = Path(__file__).resolve().parent.parent / "results" / "right_wall_withdraw" /"job_5954983" / "particles.csv"
+DATA_FILE_DEFAULT = Path(__file__).resolve().parent.parent / "results" / "coulomb_comparison" / "no_coulomb" /"job_6182927_task_1" / "particles.csv"
 WALLS_FILE_DEFAULT = Path(__file__).resolve().parent.parent / "inputs" / "walls.dat"
 
 def read_walls_data(filename: Union[str, Path] = WALLS_FILE_DEFAULT):
@@ -50,6 +51,41 @@ def read_walls_data(filename: Union[str, Path] = WALLS_FILE_DEFAULT):
         pass
     
     return walls
+
+
+def read_wall_withdraw_info(log_file: Union[str, Path]) -> Dict[int, int]:
+    """ログファイルから壁引き抜き情報を読み取る。
+    
+    ログファイル内の「斜面壁 X を引き抜きました。ステップ: Y」というパターンを解析し、
+    壁IDと引き抜きステップの対応辞書を返す。
+    
+    Args:
+        log_file: ログファイルのパス
+        
+    Returns:
+        Dict[int, int]: {壁ID (1-indexed): 引き抜きステップ} の辞書
+    """
+    withdraw_info = {}
+    
+    # パターン: 「斜面壁           1 を引き抜きました。ステップ:     10000000」
+    pattern = re.compile(r'斜面壁\s+(\d+)\s+を引き抜きました。ステップ:\s+(\d+)')
+    
+    try:
+        with open(log_file, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                match = pattern.search(line)
+                if match:
+                    wall_id = int(match.group(1))
+                    withdraw_step = int(match.group(2))
+                    withdraw_info[wall_id] = withdraw_step
+                    print(f"  壁引き抜き検出: 斜面壁 {wall_id} -> ステップ {withdraw_step}")
+    except FileNotFoundError:
+        print(f"警告: ログファイル '{log_file}' が見つかりません。壁引き抜き情報なしで続行します。")
+    except Exception as e:
+        print(f"警告: ログファイル読み込み中にエラー: {e}")
+    
+    return withdraw_info
+
 
 def read_simulation_data(
     filename: Union[str, Path] = DATA_FILE_DEFAULT,
@@ -153,6 +189,7 @@ def read_simulation_data(
         container_height = max_z * 1.1
         
         frames_data.append({
+            "step": step,  # ステップ番号を追加（壁引き抜き判定用）
             "time": frame['time'],
             "num_particles": num_particles,
             "container_width": container_width,   # 推定値
@@ -163,7 +200,8 @@ def read_simulation_data(
     print(f"\r  {len(frames_data)} フレームの読み込み完了!        ")
     return frames_data
 
-def animate(frames_data, output_filename="pem_animation.mp4", walls_data=None, fps: int = 10):
+def animate(frames_data, output_filename="pem_animation.mp4", walls_data=None, 
+            wall_withdraw_info: Optional[Dict[int, int]] = None, fps: int = 10):
     if not frames_data:
         print("アニメーションするデータがありません。")
         return
@@ -316,6 +354,17 @@ def animate(frames_data, output_filename="pem_animation.mp4", walls_data=None, f
 
         data = frames_data[frame_idx]
         particles = data['particles']
+        current_step = data.get('step', 0)
+        
+        # 壁引き抜き処理: 現在のステップが引き抜きステップ以上なら壁を非表示にする
+        if wall_withdraw_info:
+            for wall_id, withdraw_step in wall_withdraw_info.items():
+                wall_idx = wall_id - 1  # 壁IDは1-indexed、リストは0-indexed
+                if 0 <= wall_idx < len(wall_lines):
+                    if current_step >= withdraw_step:
+                        wall_lines[wall_idx].set_visible(False)
+                    else:
+                        wall_lines[wall_idx].set_visible(True)
         
         for idx, circle in enumerate(particle_patches):
             if idx < len(particles):
@@ -386,6 +435,8 @@ def parse_arguments():
     parser.add_argument("walls_file", nargs="?", default=str(WALLS_FILE_DEFAULT), help="斜面壁データファイル")
     parser.add_argument("--frame-step", type=int, default=1, help="読み込みステップ間隔")
     parser.add_argument("--max-frames", type=int, default=200, help="最大フレーム数")
+    parser.add_argument("--log-file", type=str, default=None, 
+                        help="壁引き抜き情報を含むログファイル (stdoutログ)")
     return parser.parse_args()
 
 
@@ -405,6 +456,17 @@ def main():
     print(f"データファイル: {data_file}")
     print(f"出力ファイル: {output_file}")
     
+    # 壁引き抜き情報の読み込み（ログファイルが指定されている場合）
+    wall_withdraw_info = {}
+    if args.log_file:
+        log_file = Path(args.log_file).expanduser()
+        print(f"ログファイル: {log_file}")
+        wall_withdraw_info = read_wall_withdraw_info(log_file)
+        if wall_withdraw_info:
+            print(f"  壁引き抜き情報: {len(wall_withdraw_info)} 件検出")
+        else:
+            print("  壁引き抜き情報は見つかりませんでした")
+    
     walls = read_walls_data(walls_file)
     all_frames_data = read_simulation_data(
         data_file,
@@ -413,7 +475,8 @@ def main():
     )
 
     if all_frames_data:
-        animate(all_frames_data, str(output_file), walls_data=walls)
+        animate(all_frames_data, str(output_file), walls_data=walls, 
+                wall_withdraw_info=wall_withdraw_info if wall_withdraw_info else None)
         print("\n処理が完了しました!")
     else:
         print(f"\nエラー: {data_file} から有効なデータを読み込めませんでした。")

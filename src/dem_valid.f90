@@ -1555,6 +1555,8 @@ contains
                                 x_candidate = effective_container_width - generated_radius
                             if (z_candidate < z_min_target + generated_radius) &
                                 z_candidate = z_min_target + generated_radius
+                            if (z_candidate > z_max_target - generated_radius) &
+                                z_candidate = z_max_target - generated_radius
                         end if
                     end do
                     

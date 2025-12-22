@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -p gr10451a
 #SBATCH --rsc p=1:t=32:c=32
-#SBATCH -t 96:00:00
+#SBATCH -t 240:00:00
 #SBATCH -o log/stdout.%A_%a.log
 #SBATCH -e log/stderr.%A_%a.log
 #SBATCH --array=1-9
