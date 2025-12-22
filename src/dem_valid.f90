@@ -2285,7 +2285,8 @@ contains
         real(8) :: dx, dz, dist_sq, r_eff_sq, r_eff_cubed
         real(8) :: force_factor, fx, fz
         real(8) :: qi, qj
-        real(8) :: rc, rc_sq, rc_cubed, delta_sq
+        real(8) :: rc, rc_sq, delta_sq
+        real(8) :: rc_eff_sq, rc_eff_cubed  ! softened cutoff用
         real(8), parameter :: eps_charge = 1.0d-20
         
         ! クーロン力が無効化されている場合は何もしない
@@ -2293,8 +2294,10 @@ contains
         
         rc = coulomb_cutoff
         rc_sq = rc * rc
-        rc_cubed = rc * rc_sq
         delta_sq = coulomb_softening * coulomb_softening
+        ! shifted-force用: softened cutoff値 (rc^2 + δ^2)^(3/2)
+        rc_eff_sq = rc_sq + delta_sq
+        rc_eff_cubed = rc_eff_sq * sqrt(rc_eff_sq)
         
         ! カットオフが0以下の場合は旧実装（全対全）にフォールバック
         if (rc <= 0.0d0) then
@@ -2348,9 +2351,10 @@ contains
                             r_eff_sq = dist_sq + delta_sq
                             r_eff_cubed = r_eff_sq * sqrt(r_eff_sq)
                             
-                            ! シフトドフォース: F = k*qi*qj*r_vec*(1/r_eff^3 - 1/rc^3)
+                            ! シフトドフォース: F = k*qi*qj*r_vec*(1/r_eff^3 - 1/rc_eff^3)
+                            ! ※ softening込みのカットオフ値を使用して r=rc で力が0になるようにする
                             if (coulomb_shift_force) then
-                                force_factor = coulomb_constant * qi * qj * (1.0d0/r_eff_cubed - 1.0d0/rc_cubed)
+                                force_factor = coulomb_constant * qi * qj * (1.0d0/r_eff_cubed - 1.0d0/rc_eff_cubed)
                             else
                                 force_factor = coulomb_constant * qi * qj / r_eff_cubed
                             end if
@@ -2421,9 +2425,9 @@ contains
                                     r_eff_sq = dist_sq + delta_sq
                                     r_eff_cubed = r_eff_sq * sqrt(r_eff_sq)
                                     
-                                    ! シフトドフォース
+                                    ! シフトドフォース（softening込みのカットオフ値を使用）
                                     if (coulomb_shift_force) then
-                                        force_factor = coulomb_constant * qi * qj * (1.0d0/r_eff_cubed - 1.0d0/rc_cubed)
+                                        force_factor = coulomb_constant * qi * qj * (1.0d0/r_eff_cubed - 1.0d0/rc_eff_cubed)
                                     else
                                         force_factor = coulomb_constant * qi * qj / r_eff_cubed
                                     end if
@@ -2471,7 +2475,8 @@ contains
         real(8) :: dx, dz, dist_sq, r_eff_sq, r_eff_cubed
         real(8) :: force_factor, fx, fz
         real(8) :: qi, qj
-        real(8) :: delta_sq, rc, rc_sq, rc_cubed
+        real(8) :: delta_sq, rc, rc_sq
+        real(8) :: rc_eff_sq, rc_eff_cubed  ! softened cutoff用
         real(8), parameter :: eps_charge = 1.0d-20
         real(8), parameter :: eps_dist = 1.0d-20
         
@@ -2480,7 +2485,9 @@ contains
         delta_sq = coulomb_softening * coulomb_softening
         rc = coulomb_cutoff
         rc_sq = rc * rc
-        rc_cubed = rc * rc_sq
+        ! shifted-force用: softened cutoff値 (rc^2 + δ^2)^(3/2)
+        rc_eff_sq = rc_sq + delta_sq
+        rc_eff_cubed = rc_eff_sq * sqrt(rc_eff_sq)
         
         ! 全粒子ペアについてクーロン力を計算
         !$omp parallel do schedule(dynamic) private(i, j, qi, qj, dx, dz, dist_sq, r_eff_sq, r_eff_cubed, force_factor, fx, fz)
@@ -2506,9 +2513,9 @@ contains
                 r_eff_sq = dist_sq + delta_sq
                 r_eff_cubed = r_eff_sq * sqrt(r_eff_sq)
                 
-                ! シフトドフォース
+                ! シフトドフォース（softening込みのカットオフ値を使用）
                 if (coulomb_shift_force .and. rc > 0.0d0) then
-                    force_factor = coulomb_constant * qi * qj * (1.0d0/r_eff_cubed - 1.0d0/rc_cubed)
+                    force_factor = coulomb_constant * qi * qj * (1.0d0/r_eff_cubed - 1.0d0/rc_eff_cubed)
                 else
                     force_factor = coulomb_constant * qi * qj / r_eff_cubed
                 end if
