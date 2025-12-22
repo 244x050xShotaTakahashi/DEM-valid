@@ -111,6 +111,12 @@ module simulation_parameters_mod
     logical :: wall_withdraw_done = .false.                  ! 壁引き抜き実行済みフラグ
     logical :: filled_particles_saved = .false.              ! 充填状態保存済みフラグ
     
+    ! 自動壁引き抜き制御パラメータ
+    logical :: auto_wall_withdraw = .false.                  ! 自動壁引き抜きモードの有効化
+    integer :: simulation_phase = 1                          ! シミュレーションフェーズ (1=充填, 2=崩落, 3=再堆積)
+    logical :: energy_risen_after_withdraw = .false.         ! 壁引き抜き後に運動エネルギーが上昇したか
+    real(8) :: peak_kinetic_energy = 0.0d0                   ! 崩落中の最大運動エネルギー（デバッグ用）
+    
     save
 end module simulation_parameters_mod
 
@@ -519,8 +525,8 @@ program two_dimensional_dem
             end if
         end if
         
-        ! 壁引き抜き処理
-        if (enable_wall_withdraw .and. .not. wall_withdraw_done) then
+        ! 壁引き抜き処理（手動モードのみ）
+        if (enable_wall_withdraw .and. .not. wall_withdraw_done .and. .not. auto_wall_withdraw) then
             if (it_step >= wall_withdraw_step) then
                 ! コンテナ壁の引き抜き（withdraw_wall_id > 0 の場合）
                 if (withdraw_wall_id > 0) then
@@ -632,21 +638,66 @@ program two_dimensional_dem
             call profiler_stop('integrate_leapfrog', integrate_token)
         end if
 
-        ! 静止状態の判定
-        if (static_judge_flag == 1) then
-            ! ある程度ステップを進めてから静止判定を有効にする
-            if (it_step >= min_steps_before_static_check) then
-                ! 充填状態の保存（壁引き抜き前かつ未保存の場合）
-                if (enable_wall_withdraw .and. .not. wall_withdraw_done .and. .not. filled_particles_saved) then
-                    if (it_step < wall_withdraw_step) then
+        ! ========== フェーズ制御による静止判定 ==========
+        if (auto_wall_withdraw .and. enable_wall_withdraw) then
+            ! 自動壁引き抜きモード
+            select case (simulation_phase)
+            case (1)  ! 充填段階
+                if (static_judge_flag == 1 .and. it_step >= min_steps_before_static_check) then
+                    ! 充填完了 → 壁引き抜き
+                    if (.not. filled_particles_saved) then
                         call save_filled_particles_sub
                         filled_particles_saved = .true.
                     end if
+                    
+                    ! 壁引き抜き実行
+                    if (withdraw_wall_id > 0) then
+                        select case (withdraw_wall_id)
+                            case (1); left_wall_active = .false.
+                            case (2); bottom_wall_active = .false.
+                            case (3); right_wall_active = .false.
+                            case (4); top_wall_active = .false.
+                        end select
+                        write(*,*) '自動壁引き抜き: 壁ID=', withdraw_wall_id, ', ステップ=', it_step
+                    end if
+                    if (withdraw_sloped_wall_id > 0 .and. withdraw_sloped_wall_id <= num_walls) then
+                        wall_active(withdraw_sloped_wall_id) = .false.
+                        write(*,*) '自動壁引き抜き: 斜面壁ID=', withdraw_sloped_wall_id, ', ステップ=', it_step
+                    end if
+                    wall_withdraw_done = .true.
+                    simulation_phase = 2  ! 崩落段階へ遷移
+                    write(*,*) 'フェーズ遷移: 充填 → 崩落'
                 end if
                 
-                if (stop_when_static) then
-                    write(*,*) '静止状態に到達しました。時刻: ', current_time
-                    goto 200 ! シミュレーションループを抜ける
+            case (2)  ! 崩落段階（運動エネルギー上昇を待つ）
+                if (static_judge_flag == 0) then  ! 運動エネルギー > 閾値
+                    energy_risen_after_withdraw = .true.
+                    simulation_phase = 3  ! 再堆積段階へ遷移
+                    write(*,*) 'フェーズ遷移: 崩落 → 再堆積（崩落開始を確認）'
+                end if
+                
+            case (3)  ! 再堆積段階（静止検出で終了）
+                if (static_judge_flag == 1) then
+                    write(*,*) '安息角計測完了。静止状態に到達しました。時刻: ', current_time
+                    write(*,*) '総ステップ数: ', it_step
+                    goto 200
+                end if
+            end select
+        else
+            ! 従来モード（手動壁引き抜き）
+            if (static_judge_flag == 1) then
+                if (it_step >= min_steps_before_static_check) then
+                    if (enable_wall_withdraw .and. .not. wall_withdraw_done .and. .not. filled_particles_saved) then
+                        if (it_step < wall_withdraw_step) then
+                            call save_filled_particles_sub
+                            filled_particles_saved = .true.
+                        end if
+                    end if
+                    
+                    if (stop_when_static) then
+                        write(*,*) '静止状態に到達しました。時刻: ', current_time
+                        goto 200
+                    end if
                 end if
             end if
         end if
@@ -1165,6 +1216,9 @@ contains
                 case ('WITHDRAW_SLOPED_WALL_ID')
                     read(line, *, iostat=ios) keyword, value
                     if (ios == 0) withdraw_sloped_wall_id = int(value)
+                case ('AUTO_WALL_WITHDRAW')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) auto_wall_withdraw = (int(value) == 1)
                 
                 case default
                     write(*,*) '警告: 不明なキーワード: ', trim(keyword)
