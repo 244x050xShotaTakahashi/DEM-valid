@@ -3,13 +3,15 @@ import csv
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib import cm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle
+from matplotlib.colors import Normalize, TwoSlopeNorm
 
 # 入力ファイルのデフォルトを変更 (CSV)
 DATA_FILE_DEFAULT = Path(__file__).resolve().parent.parent / "results" / "coulomb_comparison" / "no_coulomb" /"job_6182927_task_1" / "particles.csv"
@@ -104,6 +106,8 @@ def read_simulation_data(
 
     frames_data = []
     print("データファイルを読み込み中...")
+    charge_min: Optional[float] = None
+    charge_max: Optional[float] = None
     
     # データをステップごとにグループ化するための一時辞書
     # key: step, value: {time, particles: [...]}
@@ -153,11 +157,18 @@ def read_simulation_data(
                         }
                     
                     # 粒子データの追加
+                    charge_val = 0.0
+                    if 'charge' in row and row.get('charge', '') not in (None, ''):
+                        charge_val = float(row['charge'])
+                        if np.isfinite(charge_val):
+                            charge_min = charge_val if charge_min is None else min(charge_min, charge_val)
+                            charge_max = charge_val if charge_max is None else max(charge_max, charge_val)
                     p_data = {
                         "x": float(row['x']),
                         "z": float(row['z']),
                         "r": float(row['radius']),
                         "rotation_angle": float(row['angle']) if 'angle' in row else 0.0,
+                        "charge": charge_val,
                     }
                     temp_frames[step]['particles'].append(p_data)
 
@@ -198,10 +209,171 @@ def read_simulation_data(
         })
 
     print(f"\r  {len(frames_data)} フレームの読み込み完了!        ")
-    return frames_data
+    meta = {
+        "format": "csv",
+        "charge_min": charge_min,
+        "charge_max": charge_max,
+    }
+    return frames_data, meta
 
-def animate(frames_data, output_filename="pem_animation.mp4", walls_data=None, 
-            wall_withdraw_info: Optional[Dict[int, int]] = None, fps: int = 10):
+
+def _detect_data_format(path: Path) -> str:
+    """入力データのフォーマットを推定する。"""
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        return "csv"
+    # ヘッダを1行見てCSVっぽいか判定
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            first = fh.readline()
+        if "," in first and "step" in first and "time" in first:
+            return "csv"
+    except Exception:
+        pass
+    return "legacy"
+
+
+def _read_simulation_data_legacy(
+    filename: Union[str, Path],
+    frame_step: int = 1,
+    max_frames: Optional[int] = None,
+) -> Tuple[Optional[List[dict]], dict]:
+    """graph11.d (旧形式) を読み込み、各タイムステップのデータを返す。"""
+    if frame_step < 1:
+        raise ValueError("frame_step must be >= 1")
+    if max_frames is not None and max_frames < 1:
+        raise ValueError("max_frames must be >= 1 when provided")
+
+    def _read_floats(token_buffer, fh, n):
+        vals = []
+        while len(vals) < n:
+            if not token_buffer:
+                line = fh.readline()
+                if not line:
+                    raise EOFError("予期せぬ EOF")
+                token_buffer.extend(line.split())
+            vals.append(float(token_buffer.pop(0)))
+        return vals
+
+    def _skip_floats(token_buffer, fh, n):
+        count = 0
+        while count < n:
+            if not token_buffer:
+                line = fh.readline()
+                if not line:
+                    raise EOFError("予期せぬ EOF")
+                token_buffer.extend(line.split())
+            token_buffer.pop(0)
+            count += 1
+
+    frames_data: List[dict] = []
+    print("データファイルを読み込み中(Legacy)...")
+    try:
+        with open(filename, "r") as fh:
+            tokens: list[str] = []
+            frame_count = 0
+            stored_frames = 0
+            while True:
+                try:
+                    # ヘッダー: num_particles, time, container_width, container_height, rmax
+                    num_particles_f, time_val, container_width, container_height, _rmax_val = _read_floats(tokens, fh, 5)
+                    num_particles = int(num_particles_f)
+                except EOFError:
+                    break
+
+                if num_particles < 0:
+                    continue
+
+                take_frame = (frame_count % frame_step == 0)
+                particles_data_to_read = num_particles * 3
+
+                if num_particles > 0:
+                    if take_frame:
+                        particle_values = _read_floats(tokens, fh, particles_data_to_read)
+                    else:
+                        _skip_floats(tokens, fh, particles_data_to_read)
+                else:
+                    particle_values = []
+
+                # 速度データ読み飛ばし
+                if num_particles > 0:
+                    _skip_floats(tokens, fh, particles_data_to_read)
+
+                # 回転角読み込み
+                if num_particles > 0:
+                    if take_frame:
+                        rotation_angles = _read_floats(tokens, fh, num_particles)
+                    else:
+                        _skip_floats(tokens, fh, num_particles)
+                else:
+                    rotation_angles = []
+
+                if take_frame:
+                    particles = [
+                        {
+                            "x": particle_values[i * 3 + 0],
+                            "z": particle_values[i * 3 + 1],
+                            "r": particle_values[i * 3 + 2],
+                            "rotation_angle": rotation_angles[i] if i < len(rotation_angles) else 0.0,
+                        }
+                        for i in range(num_particles)
+                    ]
+
+                    frames_data.append(
+                        {
+                            "step": frame_count,
+                            "time": time_val,
+                            "num_particles": num_particles,
+                            "container_width": container_width,
+                            "container_height": container_height,
+                            "particles": particles,
+                        }
+                    )
+                    stored_frames += 1
+                    if max_frames is not None and stored_frames >= max_frames:
+                        break
+
+                frame_count += 1
+                if frame_count % 100 == 0:
+                    print(f"  {frame_count} フレーム読み込み完了...", end='\r')
+    except FileNotFoundError:
+        print(f"エラー: ファイル '{filename}' が見つかりません。")
+        return None, {"format": "legacy"}
+    except Exception as e:
+        print(f"ファイル読み込み中にエラーが発生しました: {e}")
+        return None, {"format": "legacy"}
+
+    print(f"\r  {len(frames_data)} フレームの読み込み完了!        ")
+    return frames_data, {"format": "legacy", "charge_min": None, "charge_max": None}
+
+
+def read_simulation_data_auto(
+    filename: Union[str, Path],
+    data_format: str = "auto",
+    frame_step: int = 1,
+    max_frames: Optional[int] = None,
+) -> Tuple[Optional[List[dict]], dict]:
+    """入力フォーマット(auto/csv/legacy)に応じて読み込む統合関数。"""
+    path = Path(filename)
+    fmt = data_format
+    if fmt == "auto":
+        fmt = _detect_data_format(path)
+    if fmt == "csv":
+        return read_simulation_data(path, frame_step=frame_step, max_frames=max_frames)
+    if fmt == "legacy":
+        return _read_simulation_data_legacy(path, frame_step=frame_step, max_frames=max_frames)
+    raise ValueError(f"--format must be auto|csv|legacy, got: {data_format}")
+
+def animate(
+    frames_data,
+    output_filename: str = "pem_animation.mp4",
+    walls_data=None,
+    wall_withdraw_info: Optional[Dict[int, int]] = None,
+    fps: int = 10,
+    color_by: str = "none",
+    charge_mode: str = "actual",
+    charge_range: Optional[Tuple[float, float]] = None,
+):
     if not frames_data:
         print("アニメーションするデータがありません。")
         return
@@ -343,6 +515,73 @@ def animate(frames_data, output_filename="pem_animation.mp4", walls_data=None,
     artists_to_update.extend(particle_patches)
     artists_to_update.extend(rotation_lines)
 
+    # 着色設定（静的に決め、フレームごとにCircleへ反映）
+    cmap = None
+    norm = None
+    colorbar_label = None
+    if color_by != "none":
+        if color_by == "radius":
+            rmin = None
+            rmax = None
+            for fr in frames_data:
+                for p in fr["particles"]:
+                    rv = float(p.get("r", 0.0))
+                    rmin = rv if rmin is None else min(rmin, rv)
+                    rmax = rv if rmax is None else max(rmax, rv)
+            if rmin is None or rmax is None:
+                rmin, rmax = 0.0, 1.0
+            if rmin == rmax:
+                eps = max(abs(rmin) * 1e-12, 1e-12)
+                rmin, rmax = rmin - eps, rmax + eps
+            cmap = cm.viridis
+            norm = Normalize(vmin=rmin, vmax=rmax)
+            colorbar_label = "Radius [m]"
+        elif color_by == "charge":
+            if charge_mode not in ("actual", "zero"):
+                raise ValueError(f"--charge-mode must be actual|zero, got: {charge_mode}")
+            # legacyなどでchargeが無い場合は zero のみ許可
+            has_charge = False
+            for fr in frames_data[:1]:
+                for p in fr["particles"]:
+                    if "charge" in p:
+                        has_charge = True
+                        break
+            if not has_charge and charge_mode == "actual":
+                raise ValueError("入力データに charge が無いため --color-by charge は使えません。--charge-mode zero か --color-by none/radius を指定してください。")
+
+            if charge_mode == "zero":
+                v = 1.0
+            else:
+                if charge_range is not None:
+                    cmin, cmax = float(charge_range[0]), float(charge_range[1])
+                else:
+                    cmin = None
+                    cmax = None
+                    for fr in frames_data:
+                        for p in fr["particles"]:
+                            if "charge" in p:
+                                cv = float(p["charge"])
+                                if not np.isfinite(cv):
+                                    continue
+                                cmin = cv if cmin is None else min(cmin, cv)
+                                cmax = cv if cmax is None else max(cmax, cv)
+                    if cmin is None or cmax is None:
+                        cmin, cmax = 0.0, 0.0
+                v = max(abs(cmin), abs(cmax))
+                if v == 0.0:
+                    v = 1.0
+                    print("警告: charge が全て0のため、発散カラーマップの範囲を [-1, +1] に設定します。")
+            cmap = cm.coolwarm
+            norm = TwoSlopeNorm(vcenter=0.0, vmin=-v, vmax=+v)
+            colorbar_label = "Charge [C]"
+        else:
+            raise ValueError(f"--color-by must be none|radius|charge, got: {color_by}")
+
+        # カラーバーを追加（静的）
+        sm = cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        fig.colorbar(sm, ax=ax, label=colorbar_label)
+
     frame_counter = {'count': 0}
     total_frames = len(frames_data)
 
@@ -372,6 +611,17 @@ def animate(frames_data, output_filename="pem_animation.mp4", walls_data=None,
                 circle.center = (p_data['x'], p_data['z'])
                 circle.radius = p_data['r']
                 circle.set_visible(True)
+                if color_by != "none" and cmap is not None and norm is not None:
+                    if color_by == "radius":
+                        scalar = float(p_data.get("r", 0.0))
+                    elif color_by == "charge":
+                        if charge_mode == "zero":
+                            scalar = 0.0
+                        else:
+                            scalar = float(p_data.get("charge", 0.0))
+                    else:
+                        scalar = 0.0
+                    circle.set_facecolor(cmap(norm(scalar)))
 
                 x_center = p_data['x']
                 z_center = p_data['z']
@@ -429,32 +679,52 @@ def animate(frames_data, output_filename="pem_animation.mp4", walls_data=None,
         print(f"Error during animation creation: {e}")
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description="PEM アニメーション作成ツール (CSV対応版)")
-    parser.add_argument("data_file", nargs="?", default=str(DATA_FILE_DEFAULT), help="解析するデータファイル (particles.csv)")
-    parser.add_argument("output_file", nargs="?", default="pem_animation.mp4", help="出力ファイル名")
-    parser.add_argument("walls_file", nargs="?", default=str(WALLS_FILE_DEFAULT), help="斜面壁データファイル")
+    parser = argparse.ArgumentParser(description="PEM アニメーション作成ツール (CSV/Legacy対応)")
+
+    # 推奨: フラグ指定（scripts/plot_snapshot.py 系に寄せる）
+    parser.add_argument("--file", "-f", type=str, default=None, help="入力データ (particles.csv または graph11.d)")
+    parser.add_argument("--output", "-o", type=str, default=None, help="出力ファイル名（.gif/.mp4 など）")
+    parser.add_argument("--walls", "-w", type=str, default=None, help="斜面壁データファイル (walls.dat)")
+    parser.add_argument("--format", choices=["auto", "csv", "legacy"], default="auto", help="入力フォーマット")
+
+    parser.add_argument("--fps", type=int, default=10, help="出力fps")
     parser.add_argument("--frame-step", type=int, default=1, help="読み込みステップ間隔")
     parser.add_argument("--max-frames", type=int, default=200, help="最大フレーム数")
+    parser.add_argument("--color-by", choices=["none", "radius", "charge"], default="none",
+                        help="粒子の着色に使う量 (none|radius|charge)")
+    parser.add_argument("--charge-mode", choices=["actual", "zero"], default="actual",
+                        help="color-by=charge時の可視化モード (actual=実データ, zero=0C固定)")
     parser.add_argument("--log-file", type=str, default=None, 
                         help="壁引き抜き情報を含むログファイル (stdoutログ)")
+
+    # 互換: 旧来の位置引数（残す）
+    parser.add_argument("data_file_pos", nargs="?", default=None, help="(互換) 解析するデータファイル")
+    parser.add_argument("output_file_pos", nargs="?", default=None, help="(互換) 出力ファイル名")
+    parser.add_argument("walls_file_pos", nargs="?", default=None, help="(互換) 斜面壁データファイル")
     return parser.parse_args()
 
 
 def main():
     args = parse_arguments()
 
-    data_file = Path(args.data_file).expanduser()
-    output_file = Path(args.output_file).expanduser()
-    walls_file = Path(args.walls_file).expanduser()
+    data_file_str = args.file or args.data_file_pos or str(DATA_FILE_DEFAULT)
+    output_file_str = args.output or args.output_file_pos or "pem_animation.mp4"
+    walls_file_str = args.walls or args.walls_file_pos or str(WALLS_FILE_DEFAULT)
+
+    data_file = Path(data_file_str).expanduser()
+    output_file = Path(output_file_str).expanduser()
+    walls_file = Path(walls_file_str).expanduser()
 
     frame_step = max(1, args.frame_step)
     max_frames = args.max_frames if args.max_frames and args.max_frames > 0 else None
 
     print("=" * 60)
-    print("PEM アニメーション作成ツール (CSV版)")
+    print("PEM アニメーション作成ツール (CSV/Legacy対応)")
     print("=" * 60)
     print(f"データファイル: {data_file}")
     print(f"出力ファイル: {output_file}")
+    print(f"入力フォーマット: {args.format}")
+    print(f"color_by: {args.color_by}, charge_mode: {args.charge_mode}")
     
     # 壁引き抜き情報の読み込み（ログファイルが指定されている場合）
     wall_withdraw_info = {}
@@ -468,15 +738,27 @@ def main():
             print("  壁引き抜き情報は見つかりませんでした")
     
     walls = read_walls_data(walls_file)
-    all_frames_data = read_simulation_data(
+    all_frames_data, meta = read_simulation_data_auto(
         data_file,
+        data_format=args.format,
         frame_step=frame_step,
         max_frames=max_frames,
     )
 
     if all_frames_data:
-        animate(all_frames_data, str(output_file), walls_data=walls, 
-                wall_withdraw_info=wall_withdraw_info if wall_withdraw_info else None)
+        charge_range = None
+        if meta and meta.get("charge_min") is not None and meta.get("charge_max") is not None:
+            charge_range = (float(meta["charge_min"]), float(meta["charge_max"]))
+        animate(
+            all_frames_data,
+            str(output_file),
+            walls_data=walls,
+            wall_withdraw_info=wall_withdraw_info if wall_withdraw_info else None,
+            fps=int(args.fps),
+            color_by=args.color_by,
+            charge_mode=args.charge_mode,
+            charge_range=charge_range,
+        )
         print("\n処理が完了しました!")
     else:
         print(f"\nエラー: {data_file} から有効なデータを読み込めませんでした。")
