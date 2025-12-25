@@ -20,7 +20,6 @@ import argparse
 import csv
 import math
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -94,18 +93,30 @@ def parse_rc_from_path(case_dir: Path) -> Optional[float]:
         return None
 
 
-@dataclass
 class SweepRow:
-    case_dir: Path
-    rc_m: Optional[float]
-    aor_deg: Optional[float]
-    sim_time_s: Optional[float]
-    wallclock_s: Optional[float]
-    coulomb_s: Optional[float]
-    coulomb_pct: Optional[float]
-    neighbor_s: Optional[float]
-    integrate_s: Optional[float]
-    output_s: Optional[float]
+    def __init__(
+        self,
+        case_dir: Path,
+        rc_m: Optional[float],
+        aor_deg: Optional[float],
+        sim_time_s: Optional[float],
+        wallclock_s: Optional[float],
+        coulomb_s: Optional[float],
+        coulomb_pct: Optional[float],
+        neighbor_s: Optional[float],
+        integrate_s: Optional[float],
+        output_s: Optional[float],
+    ):
+        self.case_dir = case_dir
+        self.rc_m = rc_m
+        self.aor_deg = aor_deg
+        self.sim_time_s = sim_time_s
+        self.wallclock_s = wallclock_s
+        self.coulomb_s = coulomb_s
+        self.coulomb_pct = coulomb_pct
+        self.neighbor_s = neighbor_s
+        self.integrate_s = integrate_s
+        self.output_s = output_s
 
 
 def safe_float(s: Optional[str]) -> Optional[float]:
