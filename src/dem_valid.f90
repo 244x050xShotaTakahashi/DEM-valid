@@ -64,6 +64,9 @@ module simulation_parameters_mod
     character(len=256) :: output_dir          ! 出力ディレクトリパス
     logical :: enable_profiling = .true.      ! プロファイル機能の有効化
     integer :: profiling_sample_interval = 0  ! サンプリング計測間隔 (0=サンプリングなし、N=Nステップごとに有効化)
+
+    ! OpenMP 実行の再現性重視モード（1=OpenMP並列を避けて決定的に実行）
+    logical :: deterministic_omp = .false.
     
     ! 半径分布設定
     character(len=32) :: radius_distribution_type = 'fixed'  ! 'fixed', 'file', 'uniform', 'normal'
@@ -436,6 +439,7 @@ end module profiling_mod
 ! メインプログラム
 program two_dimensional_dem
     use profiling_mod
+    use omp_lib
     use simulation_constants_mod
     use simulation_parameters_mod
     use particle_data_mod
@@ -471,6 +475,15 @@ program two_dimensional_dem
     ! inputファイルからパラメータを読み込み
     call read_input_file
     call profiler_set_enabled(enable_profiling)
+
+    ! OpenMP の再現性重視モード:
+    ! - 並列実行による加算順序揺らぎ・スケジューリング揺らぎを避けるため、スレッド数を 1 に固定する。
+    ! - 併せて OpenMP の動的スレッド調整を無効化する。
+    if (deterministic_omp) then
+        call omp_set_dynamic(.false.)
+        call omp_set_num_threads(1)
+        write(*,*) '[OMP] deterministic_omp=1: OpenMPスレッド数を1に固定'
+    end if
     
     ! 初期位置と初期条件の設定
     call fposit_sub(rmax_particle_radius)
@@ -570,14 +583,21 @@ program two_dimensional_dem
             end do
             !$omp end parallel do
             
-            !$omp parallel do schedule(dynamic) private(i)
-            do i = 1, num_particles
-                ! 粒子と壁との接触力計算
-                call wcont_sub(i)
-                ! 粒子間の接触力計算
-                call pcont_sub(i, rmax_particle_radius)
-            end do
-            !$omp end parallel do
+            if (deterministic_omp) then
+                do i = 1, num_particles
+                    call wcont_sub(i)
+                    call pcont_sub(i, rmax_particle_radius)
+                end do
+            else
+                !$omp parallel do schedule(dynamic, 16) private(i)
+                do i = 1, num_particles
+                    ! 粒子と壁との接触力計算
+                    call wcont_sub(i)
+                    ! 粒子間の接触力計算
+                    call pcont_sub(i, rmax_particle_radius)
+                end do
+                !$omp end parallel do
+            end if
 
             call profiler_stop('neighbor_search_contact', neighbor_block_token)
             
@@ -614,14 +634,21 @@ program two_dimensional_dem
             end do
             !$omp end parallel do
             
-            !$omp parallel do schedule(dynamic) private(i)
-            do i = 1, num_particles
-                ! 粒子と壁との接触力計算
-                call wcont_sub(i)
-                ! 粒子間の接触力計算
-                call pcont_sub(i, rmax_particle_radius)
-            end do
-            !$omp end parallel do
+            if (deterministic_omp) then
+                do i = 1, num_particles
+                    call wcont_sub(i)
+                    call pcont_sub(i, rmax_particle_radius)
+                end do
+            else
+                !$omp parallel do schedule(dynamic, 16) private(i)
+                do i = 1, num_particles
+                    ! 粒子と壁との接触力計算
+                    call wcont_sub(i)
+                    ! 粒子間の接触力計算
+                    call pcont_sub(i, rmax_particle_radius)
+                end do
+                !$omp end parallel do
+            end if
 
             call profiler_stop('neighbor_search_contact', neighbor_block_token)
             
@@ -1021,6 +1048,7 @@ contains
         coulomb_shift_force = .true. ! シフトドフォース（カットオフで力連続）
         coulomb_use_cell = .true.   ! セル法使用（false=旧来の全対全）
         enable_profiling = .true.
+        deterministic_omp = .false.
         
         do
             read(unit_num, '(A)', iostat=ios) line
@@ -1135,6 +1163,9 @@ contains
                 case ('PROFILING_SAMPLE_INTERVAL')
                     read(line, *, iostat=ios) keyword, value
                     if (ios == 0) profiling_sample_interval = int(value)
+                case ('DETERMINISTIC_OMP')
+                    read(line, *, iostat=ios) keyword, value
+                    if (ios == 0) deterministic_omp = (int(value) == 1)
                 
                 ! 半径分布パラメータ
                 case ('RADIUS_DISTRIBUTION_TYPE')
@@ -2237,7 +2268,7 @@ contains
         end if
         
         ! 全粒子ペアについてクーロン力を計算
-        !$omp parallel do schedule(dynamic) private(i, j, qi, qj, dx, dz, dist_sq, dist, dist_cubed, force_magnitude, fx, fz)
+        !$omp parallel do schedule(dynamic, 16) private(i, j, qi, qj, dx, dz, dist_sq, dist, dist_cubed, force_magnitude, fx, fz)
         do i = 1, num_particles - 1
             qi = charge(i)
             if (abs(qi) < 1.0d-20) cycle ! 電荷がゼロならスキップ
@@ -2327,7 +2358,7 @@ contains
         ! セル走査によるクーロン力計算
         ! 二重カウントを避けるため、同一セル内は j=next(i)、
         ! 異なるセルは「前方向のみ」（dzc>0, または dzc==0 かつ dxc>0）を走査
-        !$omp parallel do collapse(2) schedule(dynamic) &
+        !$omp parallel do collapse(2) schedule(dynamic, 16) &
         !$omp private(ix, iz, cell0, i, j, qi, qj, dx, dz, dist_sq, r_eff_sq, r_eff_cubed, force_factor, fx, fz, dxc, dzc, ix2, iz2, cell1)
         do iz = 0, cells_z_dir - 1
             do ix = 0, cells_x_dir - 1
@@ -2501,7 +2532,7 @@ contains
         rc_eff_cubed = rc_eff_sq * sqrt(rc_eff_sq)
         
         ! 全粒子ペアについてクーロン力を計算
-        !$omp parallel do schedule(dynamic) private(i, j, qi, qj, dx, dz, dist_sq, r_eff_sq, r_eff_cubed, force_factor, fx, fz)
+        !$omp parallel do schedule(dynamic, 16) private(i, j, qi, qj, dx, dz, dist_sq, r_eff_sq, r_eff_cubed, force_factor, fx, fz)
         do i = 1, num_particles - 1
             qi = charge(i)
             if (abs(qi) < eps_charge) cycle
@@ -2941,6 +2972,7 @@ contains
 
                 ! 粒子p_iへの転がり抵抗モーメント
                 rolling_torque_i = -rolling_torque_mag * sign(1.0d0, rel_angular_vel)
+                !$omp atomic
                 moment_sum(p_i) = moment_sum(p_i) + rolling_torque_i
 
                 ! 相手が粒子の場合は反作用モーメントも付与
@@ -2955,8 +2987,11 @@ contains
         ! 粒子p_iに力を適用 (式3.13)
         ! 法線力は中心を結ぶ線に沿って作用 (angle_cos, angle_sin で定義される iからjへの方向)
         ! せん断力はそれに垂直。
+        !$omp atomic
         x_force_sum(p_i) = x_force_sum(p_i) - total_normal_force * angle_cos + total_shear_force * angle_sin
-        z_force_sum(p_i) = z_force_sum(p_i) - total_normal_force * angle_sin - total_shear_force * angle_cos    
+        !$omp atomic
+        z_force_sum(p_i) = z_force_sum(p_i) - total_normal_force * angle_sin - total_shear_force * angle_cos
+        !$omp atomic
         moment_sum(p_i) = moment_sum(p_i) - ri_val * total_shear_force
 
         ! 粒子p_jに反作用力を適用 (相手が粒子の場合)
@@ -3088,7 +3123,7 @@ contains
 
     !> 充填状態の粒子データを保存するサブルーチン
     subroutine save_filled_particles_sub
-        use simulation_parameters_mod, only: output_dir
+        use simulation_parameters_mod, only: output_dir, use_explicit_positions
         use particle_data_mod
         use cell_system_mod, only: num_particles
         use profiling_mod, only: profiler_start, profiler_stop, profiler_tick_kind
@@ -3099,7 +3134,13 @@ contains
         
         call profiler_start('save_filled_particles_sub', prof_token)
         
-        file_path = 'inputs/filled_particles.dat'
+        ! 既に filled_particles.dat 等の明示配置から開始している場合は、
+        ! sweep中に inputs/filled_particles.dat を上書きして初期条件が混ざるのを避ける。
+        if (use_explicit_positions) then
+            file_path = trim(output_dir) // '/filled_particles.dat'
+        else
+            file_path = 'inputs/filled_particles.dat'
+        end if
         open(newunit=unit_num, file=trim(file_path), status='replace', action='write', iostat=ios)
         if (ios /= 0) then
             write(*,*) 'エラー: 充填状態ファイルを開けません: ', trim(file_path)
