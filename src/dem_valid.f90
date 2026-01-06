@@ -51,6 +51,7 @@ module simulation_parameters_mod
     ! 明示座標入力の制御
     logical :: use_explicit_positions         ! 明示座標ファイルの有無で切替
     character(len=256) :: positions_file      ! 明示座標ファイルパス
+    character(len=256) :: explicit_positions_file = ''  ! 入力ファイルで指定する明示座標ファイル（指定時は最優先）
     
     ! クーロン力関連パラメータ
     real(8) :: coulomb_constant               ! k: クーロン定数 [N⋅m²/C²]
@@ -1049,6 +1050,7 @@ contains
         coulomb_use_cell = .true.   ! セル法使用（false=旧来の全対全）
         enable_profiling = .true.
         deterministic_omp = .false.
+        explicit_positions_file = ''
         
         do
             read(unit_num, '(A)', iostat=ios) line
@@ -1166,6 +1168,14 @@ contains
                 case ('DETERMINISTIC_OMP')
                     read(line, *, iostat=ios) keyword, value
                     if (ios == 0) deterministic_omp = (int(value) == 1)
+
+                ! 明示座標ファイル（直接参照用）
+                case ('EXPLICIT_POSITIONS_FILE')
+                    read(line, *, iostat=ios) keyword, explicit_positions_file
+                    if (ios /= 0) then
+                        write(*,*) '警告: EXPLICIT_POSITIONS_FILE の読み込みに失敗: ', trim(line)
+                        explicit_positions_file = ''
+                    end if
                 
                 ! 半径分布パラメータ
                 case ('RADIUS_DISTRIBUTION_TYPE')
@@ -1268,8 +1278,22 @@ contains
         ! 数値積分法の表示
         write(*,*) '数値積分法: 蛙飛び法'
         
-        ! 明示座標ファイルの存在チェック（優先順位: filled_particles.dat > particle_positions.dat）
+        ! 明示座標ファイルの存在チェック
+        ! 優先順位:
+        !   1) EXPLICIT_POSITIONS_FILE（入力で指定されていれば最優先）
+        !   2) inputs/filled_particles.dat
+        !   3) inputs/particle_positions.dat
         use_explicit_positions = .false.
+        
+        if (len_trim(explicit_positions_file) > 0) then
+            positions_file = trim(explicit_positions_file)
+            inquire(file=trim(positions_file), exist=use_explicit_positions)
+            if (.not. use_explicit_positions) then
+                write(*,*) 'エラー: 指定された明示座標ファイルが見つかりません: ', trim(positions_file)
+                stop 'read_input_file: EXPLICIT_POSITIONS_FILE not found'
+            end if
+            write(*,*) '粒子配置: 明示座標ファイルを使用(指定): ', trim(positions_file)
+        else
         positions_file = 'inputs/filled_particles.dat'
         inquire(file=trim(positions_file), exist=use_explicit_positions)
         if (use_explicit_positions) then
@@ -1281,6 +1305,7 @@ contains
                 write(*,*) '粒子配置: 明示座標ファイルを使用: ', trim(positions_file)
             else
                 write(*,*) '粒子配置: 乱数生成（明示座標ファイルなし）'
+                end if
             end if
         end if
 

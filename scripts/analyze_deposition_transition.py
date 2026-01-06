@@ -112,6 +112,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not required.issubset(set(df.columns)):
         raise ValueError(f"particles.csv に必要な列がありません: required={sorted(required)}")
 
+    # NaN行を除去（破損したCSVファイル対策）
+    n_before = len(df)
+    df = df.dropna(subset=["step"])
+    n_after = len(df)
+    if n_before != n_after:
+        print(f"警告: step列にNaNを含む{n_before - n_after}行を除去しました")
+
     steps = np.sort(df["step"].unique().astype(int))
     if args.step_min is not None:
         steps = steps[steps >= args.step_min]
@@ -287,6 +294,24 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
