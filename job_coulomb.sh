@@ -34,7 +34,7 @@ date
 # ==========================================
 
 # 入力ファイル
-INPUT_FILE="inputs/input_coulomb.dat"
+INPUT_FILE="inputs/input_reference_cutoff.dat"
 
 # 安息角測定の対象斜面 (left=左壁引き抜き後, right=右壁引き抜き後)
 REPOSE_SIDE="right"

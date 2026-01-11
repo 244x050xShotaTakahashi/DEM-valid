@@ -1,18 +1,29 @@
 #!/bin/bash
-#SBATCH -p gr10451a
+#SBATCH -p gr20001b
 #SBATCH --rsc p=1:t=32:c=32
 #SBATCH -t 168:00:00
 #SBATCH -o log/charge_dist_aor_stdout.%A_%a.log
 #SBATCH -e log/charge_dist_aor_stderr.%A_%a.log
-#SBATCH --array=1-15
+#SBATCH --array=1-54
 
 # ==========================================
-# Phase 2: 帯電分布×カットオフ距離の安息角計測
+# Phase 2: 帯電分布×カットオフ距離の安息角計測（複数シード対応）
 #
 # - Phase 1 で生成された充填ファイルを入力として使用
-# - 3分布 × 5カットオフ = 15ケースを並列実行
-# - カットオフ: 0.02, 0.015, 0.01, 0.006, 0.003 m
-#   ※ 0.05m は充填のみで安息角計測は行わない
+# - 3分布 × 6カットオフ × 3シード = 54ケースを並列実行
+# - カットオフ: 0.05, 0.02, 0.015, 0.01, 0.006, 0.003 m
+#
+# Array ID割り当て (54ケース):
+#   1-18:  bimodal × 6カットオフ × 3シード
+#   19-36: normal × 6カットオフ × 3シード
+#   37-54: uniform × 6カットオフ × 3シード
+#
+# 詳細:
+#   1-6:   bimodal_seed1 × (0.05, 0.02, 0.015, 0.01, 0.006, 0.003)
+#   7-12:  bimodal_seed2 × (0.05, 0.02, 0.015, 0.01, 0.006, 0.003)
+#   13-18: bimodal_seed3 × (0.05, 0.02, 0.015, 0.01, 0.006, 0.003)
+#   19-24: normal_seed1 × ...
+#   ...
 #
 # 使い方:
 #   # Phase 1 完了後に投入
@@ -37,34 +48,46 @@ if [ ! -f "$BASE_INPUT" ]; then
   exit 1
 fi
 
-# カットオフ距離の配列（0.05m は充填のみなので除外）
-CUTOFFS=("0.02" "0.015" "0.01" "0.006" "0.003")
+# カットオフ距離の配列
+CUTOFFS=("0.05" "0.02" "0.015" "0.01" "0.006" "0.003")
 NUM_CUTOFFS=${#CUTOFFS[@]}
 
 # 帯電分布の配列
 DISTRIBUTIONS=("bimodal" "normal" "uniform")
 NUM_DISTS=${#DISTRIBUTIONS[@]}
 
-# Array ID から分布とカットオフを決定
-# Array ID 1-5: bimodal × (0.02, 0.015, 0.01, 0.006, 0.003)
-# Array ID 6-10: normal × (0.02, 0.015, 0.01, 0.006, 0.003)
-# Array ID 11-15: uniform × (0.02, 0.015, 0.01, 0.006, 0.003)
+# シード数
+NUM_SEEDS=3
+
+# Array ID から分布、シード、カットオフを決定
+# 構造: [分布][シード][カットオフ]
+# 1ケース = 1分布 × 1シード × 1カットオフ
+# 1シードあたり = 6カットオフ
+# 1分布あたり = 3シード × 6カットオフ = 18ケース
+# 合計 = 3分布 × 18 = 54ケース
 
 TASK_ID=${SLURM_ARRAY_TASK_ID:-1}
-DIST_IDX=$(( (TASK_ID - 1) / NUM_CUTOFFS ))
-CUTOFF_IDX=$(( (TASK_ID - 1) % NUM_CUTOFFS ))
+CASES_PER_SEED=$NUM_CUTOFFS
+CASES_PER_DIST=$((NUM_SEEDS * CASES_PER_SEED))
 
-if [ $DIST_IDX -ge $NUM_DISTS ] || [ $CUTOFF_IDX -ge $NUM_CUTOFFS ]; then
+DIST_IDX=$(( (TASK_ID - 1) / CASES_PER_DIST ))
+REMAINING=$(( (TASK_ID - 1) % CASES_PER_DIST ))
+SEED_IDX=$(( REMAINING / CASES_PER_SEED ))
+CUTOFF_IDX=$(( REMAINING % CASES_PER_SEED ))
+
+if [ $DIST_IDX -ge $NUM_DISTS ] || [ $SEED_IDX -ge $NUM_SEEDS ] || [ $CUTOFF_IDX -ge $NUM_CUTOFFS ]; then
   echo "Error: Invalid array task ID: $TASK_ID"
+  echo "  DIST_IDX=$DIST_IDX, SEED_IDX=$SEED_IDX, CUTOFF_IDX=$CUTOFF_IDX"
   exit 1
 fi
 
 DIST_TYPE="${DISTRIBUTIONS[$DIST_IDX]}"
+SEED_NUM=$((SEED_IDX + 1))
 RC="${CUTOFFS[$CUTOFF_IDX]}"
-CASE_NAME="${DIST_TYPE}_rc_${RC}"
+CASE_NAME="${DIST_TYPE}_seed${SEED_NUM}_rc_${RC}"
 
-# Phase 1 で生成された充填ファイルを確認
-FILLED_FILE="${FILLING_BASE}/${DIST_TYPE}/filled_particles.dat"
+# Phase 1 で生成された充填ファイルを確認（シード別）
+FILLED_FILE="${FILLING_BASE}/${DIST_TYPE}_seed${SEED_NUM}/filled_particles.dat"
 if [ ! -f "$FILLED_FILE" ]; then
   echo "Error: Filled particles file not found: $FILLED_FILE"
   echo "Please run Phase 1 (job_charge_dist_filling.sh) first."
@@ -98,6 +121,7 @@ echo "=========================================="
 echo "Phase 2: AoR Measurement"
 echo "=========================================="
 echo "Distribution    : $DIST_TYPE"
+echo "Seed Number     : $SEED_NUM"
 echo "Cutoff [m]      : $RC"
 echo "Case Name       : $CASE_NAME"
 echo "Filled File     : $FILLED_FILE"
@@ -139,8 +163,8 @@ echo "Simulation completed successfully."
 echo "Elapsed time: ${ELAPSED} seconds"
 
 # タイミング情報を保存
-echo "case,distribution,cutoff_m,elapsed_seconds" > "${OUTPUT_DIR}/timing.csv"
-echo "${CASE_NAME},${DIST_TYPE},${RC},${ELAPSED}" >> "${OUTPUT_DIR}/timing.csv"
+echo "case,distribution,seed_num,cutoff_m,elapsed_seconds" > "${OUTPUT_DIR}/timing.csv"
+echo "${CASE_NAME},${DIST_TYPE},${SEED_NUM},${RC},${ELAPSED}" >> "${OUTPUT_DIR}/timing.csv"
 
 # ビルドディレクトリをクリーンアップ
 rm -rf "$BUILD_DIR"
@@ -174,6 +198,7 @@ echo ""
 echo "=========================================="
 echo "Phase 2 Task completed: $CASE_NAME"
 echo "Distribution  : $DIST_TYPE"
+echo "Seed Number   : $SEED_NUM"
 echo "Cutoff [m]    : $RC"
 echo "Elapsed time  : ${ELAPSED} seconds"
 echo "Output Dir    : $OUTPUT_DIR"
